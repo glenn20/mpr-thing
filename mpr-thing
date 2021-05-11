@@ -1,24 +1,61 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
+
+# MIT License
+
+# Copyright (c) 2021 @glenn20
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+# vscode-fold=2
 
 import os, select, re, sys
+from typing import (
+    Any, Dict, Generator, Union, Callable, Optional, List, Tuple, cast)
 
-from mpremote.console import ConsolePosix
 from mpremote.pyboard import PyboardError
+from mpremote.pyboardextended import PyboardExtended, SerialIntercept
+try:
+    from mpremote.console import ConsolePosix, ConsoleWindows
+except ImportError:
+    from mpremote.main import ConsolePosix, ConsoleWindows   # type: ignore
 
-def hard_reset(pyb, out_callback):
-    try:
+
+Writer = Callable[[bytes], None]  # A type alias for console write functions
+
+
+def hard_reset(pyb: PyboardExtended) -> None:
+    'Toggle DTR on the serial port to force a hardware reset of the board.'
+    if isinstance(pyb.serial, SerialIntercept):
         pyb.serial = pyb.serial.orig_serial
-    except AttributeError:
-        pass
-    pyb.serial.dtr = not pyb.serial.dtr
+    pyb.serial.dtr = not pyb.serial.dtr         # type: ignore
     time.sleep(0.1)
-    pyb.serial.dtr = not pyb.serial.dtr
+    pyb.serial.dtr = not pyb.serial.dtr         # type: ignore
     pyb.mounted = False
 
-def cursor_column(console_in, console_out_write):
+
+def cursor_column(
+        console_in: Union[ConsolePosix, ConsoleWindows],
+        console_out_write: Writer) -> int:
+    "Query the console to get the current cursor column number."
     console_out_write(b'\x1b[6n')   # Query terminal for cursor position
     buf = b''
-    for i in range(10):             # Don't wait forever - just in case
+    for _ in range(10):             # Don't wait forever - just in case
         if isinstance(console_in, ConsolePosix):
             select.select([console_in.infd], [], [], 0.1)
         else:
@@ -32,59 +69,84 @@ def cursor_column(console_in, console_out_write):
         if c == b'R':               # Wait for end of escape sequence
             break
     else:
-        return None
+        return -1
 
-    try:
-        pos = re.match(r'^\x1b\[(\d)*;(\d*)R', buf.decode()).groups()
-        return int(pos[1])
-    except AttributeError:
-        return None
+    match = re.match(r'^\x1b\[(\d)*;(\d*)R', buf.decode())
+    return int(match.groups()[1]) if match else -1
 
-# A context manager for the raw repl
-class raw_repl:
-    def __init__(self, pyb, write_fn, soft_reset=True):
-        self.pyb = pyb
-        self.soft_reset = soft_reset
+
+# A context manager to catch exceptions from pyboard and others
+class catcher:
+    def __init__(self, write_fn: Writer):
         self.write_fn = write_fn
 
-    def __enter__(self):
+    def __enter__(self) -> Any:
+        pass
+
+    def __exit__(
+            self, exc_type: Any, value: Exception, tr: Any) -> bool:
+        if exc_type == PyboardError:
+            self.write_fn(b"PyboardError: ")
+            if len(value.args) == 3:    # Raised by Pyboard.exec_()
+                self.write_fn(value.args[1])
+                self.write_fn(value.args[2])
+            else:                       # Others just include a single message
+                self.write_fn(value.args[0].encode())
+        elif exc_type == KeyboardInterrupt:
+            pass
+        elif exc_type in (OSError, FileNotFoundError):
+            self.write_fn("{}: {}".format(exc_type.__name__, value).encode())
+        elif value is not None:
+            self.write_fn(b"Error:: ")
+            for arg in value.args:
+                self.write_fn(bytes("{}".format(arg), 'utf8'))
+            traceback.print_exc()
+        return True
+
+
+# A context manager for the raw_repl
+class raw_repl(catcher):
+    def __init__(
+            self,
+            pyb: PyboardExtended,
+            write_fn: Writer,
+            soft_reset: bool = True):
+        self.pyb = pyb
+        self.soft_reset = soft_reset
+        super().__init__(write_fn)
+
+    def __enter__(self) -> PyboardExtended:
+        super().__enter__()
         if self.soft_reset:
-            self.pyb.enter_repl()
+            self.pyb.enter_raw_repl()
         else:
             self.pyb.enter_raw_repl_without_soft_reset()
         return self.pyb
 
-    def __exit__(self, exc_type, value, traceback):
+    def __exit__(
+            self, exc_type: Any, value: Exception, traceback: Any) -> bool:
         self.pyb.exit_raw_repl()
         self.pyb.read_until(4, b">>> ")
-        if exc_type == PyboardError:
-            self.write_fn(b"PyboardError: ")
-            if len(value.args) == 3:
-                self.write_fn(value.args[1])
-                self.write_fn(value.args[2])
-            else:
-                self.write_fn(value.args[0].encode())
-            return True
-        elif exc_type == KeyboardInterrupt:
-            return True
-        elif exc_type in (OSError, FileNotFoundError):
-            self.write_fn("{}: {}".format(exc_type.__name__, value).encode())
-            return True
-        elif value != None:
-            self.write_fn(b"Error:: ")
-            for arg in value.args:
-                self.write_fn(bytes("{}".format(arg), 'utf8'))
+        return super().__exit__(exc_type, value, traceback)
+
 
 # This is going to override do_repl_main_loop in the mpremote module
 # It interprets a "!" or "%" character typed at the start of a line
 # at the base python prompt as starting a "magic" command.
-def my_do_repl_main_loop(pyb, console_in, console_out_write, file_to_inject):
+def my_do_repl_main_loop(
+        pyb:                PyboardExtended,
+        console_in:         Union[ConsolePosix, ConsoleWindows],
+        console_out_write:  Writer,
+        file_to_inject:     str) -> None:
+
+    'An overload function for the main repl loop in "mpremote".'
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
     local, remote = LocalCmd(), RemoteCmd(pyb, console_out_write)
     while True:
         if isinstance(console_in, ConsolePosix):
             # TODO pyb.serial might not have fd
-            select.select([console_in.infd, pyb.serial.fd], [], [])
+            select.select(
+                [console_in.infd, pyb.serial.fd], [], [])  # type: ignore
         else:
             while not (console_in.inWaiting() or pyb.serial.inWaiting()):
                 time.sleep(0.01)
@@ -99,24 +161,25 @@ def my_do_repl_main_loop(pyb, console_in, console_out_write, file_to_inject):
                 remote.reset_hooks()
             elif c == b"\x12":  # ctrl-R
                 # Toggle DTR (hard reset) and reload the filesystem hook
-                hard_reset(pyb, console_out_write)
+                hard_reset(pyb)
                 beginning_of_line = True
                 remote.reset_hooks()
             elif c == b"\x0b":  # ctrl-k, inject script
-                console_out_write(bytes("Injecting %s\r\n" % file_to_inject, "utf8"))
+                console_out_write(
+                    bytes("Injecting %s\r\n" % file_to_inject, "utf8"))
                 pyb.enter_raw_repl_without_soft_reset()
                 with open(file_to_inject, "rb") as f:
                     pyfile = f.read()
                 try:
                     pyb.exec_raw_no_follow(pyfile)
-                except pyboard.PyboardError as er:
+                except PyboardError as err:
                     console_out_write(b"Error:\r\n")
-                    console_out_write(er)
+                    console_out_write(repr(err).encode('utf-8'))
                 pyb.exit_raw_repl()
                 beginning_of_line = True
             elif (c == b"!" and at_prompt  # Magic sequence if at start of line
-                    and (beginning_of_line
-                        or cursor_column(console_in, console_out_write) == 5)):
+                    and (beginning_of_line or
+                         cursor_column(console_in, console_out_write) == 5)):
                 console_in.exit()
                 with raw_repl(pyb, console_out_write, soft_reset=False):
                     local.cmdloop()
@@ -124,21 +187,23 @@ def my_do_repl_main_loop(pyb, console_in, console_out_write, file_to_inject):
                 pyb.serial.write(b"\x0d")  # Force another prompt
                 beginning_of_line = True
             elif (c == b"%" and at_prompt  # Magic sequence if at start of line
-                    and (beginning_of_line
-                        or cursor_column(console_in, console_out_write) == 5)):
+                    and (beginning_of_line or
+                         cursor_column(console_in, console_out_write) == 5)):
+                pyb.serial.write(c)
+                # console_out_write(b"\x0b")
                 console_in.exit()
                 with raw_repl(pyb, console_out_write, soft_reset=False):
                     remote.cmdloop()
                 console_in.enter()
-                pyb.serial.write(b"\x0d")  # Force another prompt
                 beginning_of_line = True
-            elif c == b"\x0d":  # ctrl-k, inject script
+            elif c == b"\x0d":
                 pyb.serial.write(c)
                 beginning_of_line = True
             else:
                 pyb.serial.write(c)
                 beginning_of_line = False
 
+        n = 0
         try:
             n = pyb.serial.inWaiting()
         except OSError as er:
@@ -167,12 +232,16 @@ def my_do_repl_main_loop(pyb, console_in, console_out_write, file_to_inject):
                 else:
                     prompt_char_count = 0
 
+
 from mpremote import main
 
-# Override the mpremote main repl loop
+# Override the mpremote main repl loop!!!
 main.do_repl_main_loop = my_do_repl_main_loop
 
-import time, cmd, shutil, readline
+# The following could be extracted into command.py
+import time, cmd, shutil, readline, traceback
+import shlex, glob, fnmatch, subprocess
+
 
 class LocalCmd(cmd.Cmd):
     prompt = '\r>>> !'
@@ -182,364 +251,853 @@ class LocalCmd(cmd.Cmd):
                  """
 
     # Completion of filenames on the local filesystem
-    def completedefault(self, match, line, begidx, endidx):
+    def completedefault(  # type: ignore
+            self, match: str, line: str,
+            begidx: int, endidx: int) -> List[str]:
+        'Return a list of files on the local host which start with "match".'
         try:
             sep = match.rfind('/')
-            d, match = match[:sep+1], match[sep+1:]
+            d, match = match[:sep + 1], match[sep + 1:]
             _, dirs, files = next(os.walk(d or '.'))
             files = [d + f for f in files if f.startswith(match)]
             files.extend(d + f + '/' for f in dirs if f.startswith(match))
             files.sort()
             return files
-        except:
+        except Exception:
             traceback.print_exc()
+            return []
 
     # Completion of directories on the local filesystem
-    def complete_cd(self, text, line, begidx, endidx):
+    def complete_cd(
+            self, text: str, line: str, begidx: int, endidx: int) -> List[str]:
+        'Return a list of directories which start with "match".'
         return [
-            f for f in self.complete_filename(text, line, begidx, endidx)
+            f for f in self.completedefault(text, line, begidx, endidx)
             if f.endswith('/')]
 
-    def do_cd(self, line):
+    def do_cd(self, line: str) -> None:
         """Change the current directory on the local host:
             !cd ..
         This will call os.chdir() instead of executing in a sub-shell."""
-        for arg in line.split():
+        for arg in shlex.split(line):
             os.chdir(arg)
+        print(os.getcwd())
 
-    def default(self, line):
+    def default(self, line: str) -> bool:
         os.system(line)
         return True
 
-    def emptyline(self):
+    def emptyline(self) -> bool:
         return True
 
-# Upload support code for the magic commands to the board
-cmd_hook_code = """\
-import uos
+    def postcmd(self, stop: Any, line: str) -> bool:
+        return True
 
-class _MPR:
-    def __init__(self, columns=80):
-        self.columns = columns
 
-    def is_dir(self, file, state=True):
+class AnsiColour:
+    'A class to colourise text with ANSI escape sequences'
+    def __init__(self, enable: bool = True):
+        self._enable = enable
+        # Load the colour specification for the "ls" command
+        spec = (
+            os.getenv('LS_COLORS') or
+            subprocess.check_output(
+                'eval `dircolors`; echo -n $LS_COLORS',
+                shell=True, text=True) or
+            'di=01;34:*.py=01;36:').rstrip(':')
+        self.spec = {
+            k.lstrip('*'): v for k, v in
+            (c.split('=') for c in spec.split(':'))} if spec else {}
+        if '*.py' not in self.spec:     # A fallback colour for *.py files
+            self.spec['*.py'] = '01;36'
+        self.dir_colour = self.spec.get('di', '')
+        # Dict of ansi colour specs by name
+        self.colour = {  # ie: {'black': '00;30', ... 'white': '00;37'}
+            name: '00;3{}'.format(i)
+            for i, name in enumerate((
+                'black', 'red', 'green', 'yellow',
+                'blue', 'magenta', 'cyan', 'white'))}
+        self.colour['reset'] = '0'
+
+    def enable(self, enable: bool = True) -> None:
+        """Enable or disable colourising of text with ansi escapes."""
+        self._enable = enable
+
+    def colourise(
+            self, spec: str, word: str,
+            bold: Optional[bool] = None, reset: str = '0') -> str:
+        """Return "word" colourised according to "spec", which may be a colour
+        name (eg: 'green') or an ansi sequence (eg: '00;32')."""
+        if not spec or not self._enable:
+            return word
+        spec, reset = (
+            self.colour.get(spec, spec),
+            self.colour.get(reset, reset))
+        spec = self.bold(spec, bold)
+        return '\x1b[{}m{}\x1b[{}m'.format(spec, word, reset)
+
+    def __call__(
+            self, spec: str, word: str,
+            bold: Optional[bool] = None, reset: str = '0') -> str:
+        """Return "word" colourised according to "spec", which may be a colour
+        name (eg: 'green') or an ansi sequence (eg: '00;32')."""
+        return self.colourise(spec, word, bold, reset)
+
+    def bold(self, spec: str, bold: Optional[bool] = True) -> str:
+        """Set the "bold" attribute in an ansi colour "spec" if "bold" is
+        True, or unset the attribute if "bold" is False."""
+        spec = self.colour.get(spec, spec)
+        return (
+            spec if bold is None else
+            (spec[:1] + ('1' if bold else '0') + spec[2:]))
+
+    def pick(self, file: str, bold: Optional[bool] = None) -> str:
+        """Pick a colour for "file" according to the "ls" command."""
+        spec = (
+            self.dir_colour if file[-1] == '/' else
+            self.spec.get(os.path.splitext(file)[1], ''))
+        return self.bold(spec, bold)
+
+    # Return a colour decorated filename
+    def file(self, file: str, reset: str = '0') -> str:
+        """Return "file" colourised according to the colour "ls" command."""
+        return self.colourise(self.pick(file), file, reset=reset)
+
+    # Return a colour decorated directory
+    def dir(self, file: str, reset: str = '0') -> str:
+        """Return "dir" colourised according to the colour "ls" command."""
+        return self.colourise(self.dir_colour, file, reset=reset)
+
+
+ansi_colour = AnsiColour()
+
+
+# A collection of helper functions for file listings and filename completion
+# to be uploaded to the micropython board and processed on the local host.
+class MagicHelper:
+    # The helper code which runs on the micropython board
+    cmd_hook_code = """\
+class _MagicHelper:
+    import uos
+
+    def ls_dir(self, dir, long, recursive):
+        print('("{}",['.format(dir), end='')
+        dirs = []
+        for f, mode, *_ in uos.ilistdir(dir):
+            if mode & 0x4000:   # File is a directory
+                if recursive > 0 and f[0] != '.':
+                    dirs.append(f)
+                f += '/'
+            if long:
+                s = uos.stat(dir + ('/' if dir[-1] != '/' else '') + f)
+                print('("{}",{},{}),'.format(
+                    f, 0 if s[0] & 0x4000 else s[6], s[8]), end='')
+            else:
+                print('"{}",'.format(f), end='')
+        print(']),')
+
+        for f in dirs:
+            self.ls_dir(
+                dir + ('/' if dir[-1] != '/' else '') + f,
+                long, recursive - 1)
+
+    def ls(self, args, long=False, recursive=0):
+        args = args or ['.']
+        dirs = []
+        print('[')
+        for f in args:
+            try:
+                s = uos.stat(f)
+            except OSError as err:
+                e = [f, "OSError:"]; e.extend(err.args)
+                print('{},'.format(e))
+                continue
+            if s[0] & 0x4000:  # File is a directory
+                dirs.append(f.rstrip('/') or '/')
+            else:
+                if long:
+                    print('("{}",{},{}),'.format(f, s[6], s[8]))
+                else:
+                    print('"{}",'.format(f))
+
+        for f in dirs:
+            self.ls_dir(f, long, recursive)
+        print(']')
+
+    def cp_file(self, f1, f2):
+        f1, f2 = open(f1, "rb"), open(f2, "wb")
+        buf = bytearray(1024)
+        n = f1.readinto(buf)
+        while n > 0:
+            f2.write(buf, n)
+            n = f1.readinto(buf)
+        f1.close(); f2.close()
+
+    def cp_dir(self, dir, dest, r=0):
+        if r <= 0:
+            print("Can not copy directory {}: Increase recursion".format(dir))
+            return
+        dest += '/' + dir[dir.rfind('/')+1:]
         try:
-            return bool(uos.stat(file)[0] & 0x4000) == bool(state)
-        except OSError as err:
-            if not state:     # Only print this once
-                print('ls: cannot access "{}": {}'.format(file, err))
-            return False
+            uos.mkdir(dest)
+        except:
+            if not uos.stat(dest)[0] & 0x4000:
+                print('Can not overwrite non-directory {} with directory {}'
+                    .format(dest, dir))
+                return
+        print("mkdir:", dest)
+        for f, m, *_ in uos.ilistdir(dir):
+            if m & 0x4000 and r > 0:
+                self.cp_dir(dir + '/' + f, dest, r - 1)
+            else:
+                self.cp_file(dir + '/' + f, dest + '/' + f)
 
-    def lsfiles(self, files):
-        files = list(files)
-        if not files: return
-        w = max(len(f) for f in files) + 1
-        cols = self.columns // w
-        fmt = '{:' + str(w) + '}'
-        n = 1
+    def cp(self, files, r=0):
+        try:
+            s = uos.stat(files[-1])
+        except OSError:
+            s = (0,)
+        if len(files) == 2 and not s[0] & 0x4000:
+            self.cp_file(files[0], files[1])
+            return
+        elif not s[0] & 0x4000:
+            print("Destination must be a directory.")
+            return
+        for f in files[:-1]:
+            if uos.stat(f)[0] & 0x4000:
+                self.cp_dir(f, files[-1], r)
+            else:
+                self.cp_file(f, files[-1] + '/' + f[f.rfind('/')+1:])
+
+    def mv(self, files):
+        try:
+            s = uos.stat(files[-1])
+        except OSError:
+            s = [0]
+        if len(files) == 2 and not s[0] & 0x4000:
+            uos.rename(files[0], files[1])
+            return
+        elif not s[0] & 0x4000:
+            print("Destination must be a directory.")
+            return
+        for f in files[:-1]:
+            f2 = files[-1] + '/' + f[f.rfind('/')+1:]
+            uos.rename(f, f2)
+
+    def rm(self, files, r=0):
         for f in files:
-            print(fmt.format(f), end=('' if n % cols and n < len(files) else '\\n'))
-            n += 1
+            try:
+                uos.remove(f)
+                continue
+            except OSError:
+                pass
+            try:
+                m = uos.stat(f)[0]
+            except OSError:
+                print('No such file:', f)
+                break
+            if m & 0x4000:
+                if r > 0:
+                    self.rm(((f + '/' + i[0]) for i in uos.ilistdir(f)), r - 1)
+                    uos.rmdir(f)
+                else:
+                    print("Can not remove directory {}: Increase recursion"
+                        .format(f))
+            else:
+                print('Unable to remove:', f)
 
-    def ls(self, line):
-        args = line.split() or ['.']
-        files = [f for f in args if self.is_dir(f, False)]
-        args.sort(); files.sort()
-        if files:
-            self.lsfiles(files)
-        firsttime = True
-        for d in (f for f in args if self.is_dir(f, True)):
-            if (len(args) > 1):
-                print('' if firsttime else '\\n', d, ':', sep='')
-                firsttime = False
-            self.lsfiles(sorted(
-                f[0] + ('/' if f[1] & 0x4000 else '')  # Add / to directories
-                for f in uos.ilistdir(d)))
-
-    def file_matches(self, match):
-        import uos
+    def f_m(self, match):  # file_matches for filename completion
         sep = match.rfind('/')
         d, match = match[:sep+1], match[sep+1:]
-        print([
-            (d if d != '.' else '') + f[0] + ('/' if f[1] & 0x4000 else '')  # Add / to directories
-            for f in uos.ilistdir(d or '.') if f[0].startswith(match)
-        ])
+        try:
+            matches = [
+                (d if d != '.' else '') + f[0] +
+                ('/' if f[1] & 0x4000 else '')  # Add / to directories
+                for f in uos.ilistdir(d or '.') if f[0].startswith(match)
+            ]
+        except OSError:
+            matches = '[]'
+        print(matches)
 
-_mpr = _MPR()
+    from gc import mem_alloc, mem_free
+
+    def pr(self):
+        print('("',uos.getcwd(),'",',mem_alloc(),',',mem_free(),')')
+
+_helper = _MagicHelper()
 """
 
-# Apply basic compression on hook code.
-hook_subs = (
-    (" *#.*$", "",  {'flags': re.MULTILINE}),
-    ("\n\n+",  "\n",),
-    ("    ",   " ", ),
-    ("rd_",    "r", ),
-    ("wr_",    "w", ),
-    ("buf4",   "b4",),
-)
-def do_hook_subs(subs, code):
-    for sub in subs:
-        a, b, *flags = sub
-        flags = flags[0] if flags else {}
-        code = re.sub(a, b, code, **flags)
-    return code
+    # Apply basic compression on hook code - (from mpremote tool).
+    HookSubsType = List[Tuple[str, str, Dict[str, int]]]
+    hook_subs: HookSubsType = [
+        (" *#.*$",  "",     {'flags': re.MULTILINE}),
+        ("\n\n+",   "\n",   {}),
+        ("    ",    " ",    {}),
+        (r"([,;])  *",    r"\1",    {}),
+        (r"  *([=+-])  *",   r"\1",    {}),
+    ]
 
-cmd_hook_code = do_hook_subs(hook_subs, cmd_hook_code)
+    @staticmethod
+    def do_hook_subs(subs: HookSubsType, code: str) -> str:
+        'Apply compression techniques to the code before uploading to board.'
+        for sub in subs:
+            a, b, flags  = sub
+            code         = re.sub(a, b, code, **flags)
+        return code
 
-DELIMS = ' \t\n>;'
+    def __init__(self) -> None:
+        self.colour = ansi_colour
+        MagicHelper.cmd_hook_code = (
+            MagicHelper.do_hook_subs(
+                MagicHelper.hook_subs, MagicHelper.cmd_hook_code))
+
+    # Type hints for the file listing data
+    LsShortStyle = List[str]
+    LsLongStyle  = List[Tuple[str, int, int]]
+    LsFileList   = Union[LsShortStyle, LsLongStyle]
+
+    # Methods to process data returned from the helper functions
+    def ls_files(self, file_list: LsFileList) -> None:
+        '''Print a file listing (long or short style) from data returned
+        from the board.'''
+        # Pretty printing for files on the board
+        if not file_list:
+            return
+        columns = shutil.get_terminal_size().columns
+        file_list.sort()
+        if isinstance(file_list[0], str):
+            files = cast(MagicHelper.LsShortStyle, file_list)
+            # Short listing style - data is a list of filenames
+            if len(files) < 20 and sum(len(f) + 2 for f in files) < columns:
+                # Print all on one line
+                for f in files:
+                    print(self.colour.file(f), end='  ')
+                print('')
+            else:
+                # Print in columns - by row
+                w = max(len(f) for f in files) + 2
+                spaces = ' ' * w
+                cols = columns // w
+                n = 1
+                for f in files:
+                    print(
+                        self.colour.file(f), spaces[len(f):], sep='',
+                        end=('' if n % cols and n < len(files) else '\n'))
+                    n += 1
+        else:
+            # Long listing style - data is tuples of (filename, size, mtime)
+            files_long = cast(MagicHelper.LsLongStyle, file_list)
+            for f, size, mtime in files_long:
+                if mtime < 40 * 31536000:  # ie. before 2010
+                    mtime += 946684800   # Correct for epoch=2000 on uPython
+                print('{:9d} {} {}'.format(
+                    size,
+                    time.strftime('%a %x %X', time.localtime(mtime))[:-3],
+                    self.colour.file(f)))
+
+    # File listing: response is received from _helper.ls() on the board
+    def ls(self, response: bytes) -> None:
+        'Print a nice file listing from the data sent back from the board.'
+        if not response:
+            return
+        file_list = eval(response)
+        # First print any error messages from missing files: present as lists
+        for err in (f for f in file_list if isinstance(f, list)):
+            print('ls: connot access \'{}\': Not found: {}'.format(
+                err[0], err[1:]))
+
+        # Print any files listed on the command line
+        files = [
+            f for f in file_list
+            if isinstance(f, str) or (isinstance(f, tuple) and len(f) == 3)]
+        self.ls_files(cast(MagicHelper.LsFileList, files))
+
+        # Print the listings of args which are directories
+        # Each dir is a tuple with len == 2: (dirname, [file1, file2, ..])
+        dirs = [
+            f for f in file_list
+            if isinstance(f, tuple) and len(f) == 2]
+        dirs.sort()
+        first_time = not files
+        for dir, files in dirs:
+            if not first_time:
+                print('')           # Insert a blank line between listings
+            first_time = False
+            if len(dirs) > 1:
+                print('{}:'.format(dir.rstrip('/') or '/'))
+            if files:
+                self.ls_files(cast(MagicHelper.LsFileList, files))
+
 
 class RemoteCmd(cmd.Cmd):
-    base_prompt = '\r>>> %'
-    doc_header = (
+    base_prompt: str = '\r>>> %'
+    doc_header: str = (
         'Execute "%magic" commands at the micropython prompt, eg: %ls /\n'
         'Use "%%" to enter multiple command mode.')
 
-    def __init__(self, pyb, console_out_write):
-        self.pyb = pyb
-        self.write = console_out_write
-        self.prompt = self.base_prompt
-        self.hooks_loaded = False
-        self.single_cmd_mode = True
-        readline.set_completer_delims(DELIMS)
+    def __init__(self, pyb: PyboardExtended, console_out_write: Writer):
+        self.pyb                = pyb
+        self._helper            = MagicHelper()
+        self.write_fn           = console_out_write
+        self.prompt             = self.base_prompt
+        self.hooks_loaded       = False
+        self.single_cmd_mode    = True
+        self.colour             = ansi_colour
+        self.board              = {}
+        self.board['device']    = self.pyb.device_name
+        # The shortname/alias for the device, eg: '/dev/ttyUSB0' -> 'u0'
+        match = re.match(r'^/dev/tty(.).*(.)$', self.board['device'].lower())
+        self.board['dev'] = ''.join(match.groups()) if match else '??'
+        readline.set_completer_delims(' \t\n>;')
         super().__init__()
 
         # Set the completion functions
         fname = self.complete_filename
-        self.complete_ls    = fname
-        self.complete_cat   = fname
-        self.complete_mv    = fname
-        self.complete_rm    = fname
-        self.complete_get   = fname
-        self.complete_put   = fname
-        self.complete_edit  = fname
+        self.complete_ls        = fname
+        self.complete_cat       = fname
+        self.complete_edit      = fname
+        self.complete_touch     = fname
+        self.complete_mv        = fname
+        self.complete_cp        = fname
+        self.complete_rm        = fname
+        self.complete_get       = fname
         fname = self.complete_directory
-        self.complete_cd    = fname
-        self.complete_mkdir = fname
-        self.complete_rmdir = fname
+        self.complete_cd        = fname
+        self.complete_mkdir     = fname
+        self.complete_rmdir     = fname
         fname = self.complete_local_filename
-        self.complete_put   = fname
-        self.complete_mount = fname
+        self.complete_put       = fname
+        self.complete_run       = fname
         fname = self.complete_local_directory
-        self.complete_lcd   = fname
+        self.complete_mount     = fname
+        self.complete_lcd       = fname
 
-    def preloop(self):
-        self._ensure_hooks()
-        self.single_cmd_mode = True
+    def write(self, response: bytes) -> None:
+        'Call the console writer for output (convert "str" to "bytes").'
+        if response:
+            if not isinstance(response, bytes):
+                response = bytes(response, 'utf-8')
+            self.write_fn(response)
 
-    def precmd(self, line):
-        if not self.single_cmd_mode and line and line[0] == "%":
-            return line[1:]
-        else:
-            return line
+    ## Execute stuff on the micropython board
+    def exec(self, code: str) -> bytes:
+        'Execute some code on the micropython board.'
+        response: bytes = b''
+        with catcher(self.write):
+            response = self.pyb.exec_(code)
+        return response
 
-    def default(self, line):
-        if self.single_cmd_mode and line.strip() == "%":
-            self.prompt = "%% "
-            self.write(
-                b'Enter magic commands (try "help" for a list)\n'
-                b'Type "quit" or ctrl-D to return to micropython:\n')
-            self.single_cmd_mode = False
-        elif not self.single_cmd_mode and line.strip() in ("exit", "quit", "EOF"):
-            self.prompt = self.base_prompt
-            self.single_cmd_mode = True
-        else:
-            self.write('Unknown command: "{}"'.format(line.strip()).encode())
+    def eval_exec(self, code: str) -> Any:
+        return eval(self.exec(code))
 
-    def postcmd(self, stop, line):
-        if not self.single_cmd_mode:
-            self.write(b"\n")
-        return self.single_cmd_mode  # Force exit after one command
+    def write_exec(self, code: str) -> None:
+        self.write(self.exec(code))
 
-    def emptyline(self):            # Else empty lines repeat last command
-        pass
+    ## File commands
+    def do_ls(self, line: str) -> None:
+        """List files on the board:
+            %ls [-[lR]] [file_or_dir1 ...]"""
+        opts, args = '', list(self.split(line))
+        if args and args[0][0] == "-":
+            opts, *args = args
+        self._helper.ls(self.exec(
+            '_helper.ls({}, {}, {})'.format(
+                args,                        # Dirs and files to list
+                "l" in opts,                 # Use a long-style listing
+                10 if "R" in opts else 0)))  # Max recursion = 10
 
-    # touch, sync
-    def reload_hooks(self):
-        #if self.pyb.eval('"_mpr" in globals()') == b"False":
-        self.pyb.exec_(cmd_hook_code)
-        self.pyb.exec_(
-            '_mpr.columns = {}'.format(shutil.get_terminal_size().columns))
-        self.hooks_loaded = True
+    def do_cat(self, line: str) -> None:
+        """List the contents of files on the board:
+            %cat file [file2 ...]"""
+        for arg in self.split(line):
+            with catcher(self.write):
+                self.pyb.fs_cat(arg)
+            self.write(b'\r\n')
 
-    def reset_hooks(self):
-        self.hooks_loaded = False
-
-    def _ensure_hooks(self):
-        if not self.hooks_loaded:
-            self.reload_hooks()
-
-    # Completion of filenames on the board for commands
-    def complete_filename(self, text, line, begidx, endidx):
-        try:        # Cmd invisibly swallows all exceptions
-            res = self.pyb.exec_('_mpr.file_matches("{}")'.format(text))
-            return eval(res)
-        except:
-            traceback.print_exc()
-
-    # Completion of directories on the board
-    def complete_directory(self, text, line, begidx, endidx):
-        try:
-            return [
-                f for f in self.complete_filename(text, line, begidx, endidx)
-                if f.endswith('/')]
-        except:
-            traceback.print_exc()
-
-    # Completion of filenames on the local filesystem
-    def complete_local_filename(self, match, line, begidx, endidx):
-        try:
-            sep = match.rfind('/')
-            d, match = match[:sep+1], match[sep+1:]
-            _, dirs, files = next(os.walk(d or '.'))
-            files = [d + f for f in files if f.startswith(match)]
-            files.extend(d + f + '/' for f in dirs if f.startswith(match))
-            files.sort()
-            return files
-        except:
-            traceback.print_exc()
-
-    # Completion of directories on the local filesystem
-    def complete_local_directory(self, text, line, begidx, endidx):
-        return [
-            f for f in self.complete_filename(text, line, begidx, endidx)
-            if f.endswith('/')]
-
-    def do_ls(self, line):
-        """List files on the board:\n  %ls [file_or_dir1 ...]"""
-        res = self.pyb.exec_('_mpr.ls("{}")'.format(line))
-        if res: self.write(res[:-1])
-
-    def do_cat(self, line):
-        """List the contents of files on the board:\n    %cat file [file2 ...]"""
-        for arg in line.split():
-            self.pyb.fs_cat(arg)
-
-    def do_mv(self, line):
-        """Rename/move a file on the board:\n    %mv old new"""
-        old, new = line.split()
-        res = self.pyb.exec_('uos.rename("{}", "{}")'.format(old, new))
-        if res: self.write(res[:-1])
-
-    def do_rm(self, line):
-        """Delete files from the board:\n    %rm file1 [file2 ...]"""
-        for arg in line.split():
-            self.pyb.fs_rm(arg)
-
-    def do_get(self, line):
-        """Copy a file from the board to a local folder:\n
-            %get file1 [file2 ... local_dir]"""
-        for arg in line.split():
-            self.pyb.fs_get(arg, os.path.basename(arg))
-
-    def do_put(self, line):
-        """Copy one local file to the current folder on the board:
-            put file
-        Copy one or more local files to a folder on the board:
-            %put file1 [... filen] folder"""
-        for arg in line.split():
-            self.pyb.fs_put(arg, os.path.basename(arg))
-
-    def do_edit(self, line):
+    def do_edit(self, line: str) -> None:
         """Copy a file from the board, open it in your editor, then copy it back:
             %edit file1 [file2 ...]
         """
-        args = line.split()
-        for arg in args:
+        for arg in self.split(line):
             import tempfile
             fd, fname = tempfile.mkstemp()
             os.close(fd)
-            self.pyb.fs_get(arg, fname)
-            if 0 == os.system(f'${{EDITOR:-/usr/bin/vi}} {fname}'):
-                self.pyb.fs_put(fname, arg)
+            with catcher(self.write):
+                self.pyb.fs_get(arg, fname)
+                if 0 == os.system(f'${{EDITOR:-/usr/bin/vi}} {fname}'):
+                    self.pyb.fs_put(fname, arg)
             os.remove(fname)
 
-    def do_cd(self, line):
+    def do_touch(self, line: str) -> None:
+        """Create a file on the board:
+            %touch file [file2 ...]"""
+        for arg in self.split(line):
+            self.write_exec('open("{}", "a").close()'.format(arg))
+
+    def do_mv(self, line: str) -> None:
+        """Rename/move a file on the board:
+            %mv old new"""
+        args = list(self.split(line))
+        self.write_exec('_helper.mv({})'.format(args))
+
+    def do_cp(self, line: str) -> None:
+        """Make a copy of a file on the board:
+            %cp from to"""
+        opts, args = '', list(self.split(line))
+        if args and args[0][0] == "-":
+            opts, *args = args
+        self.write_exec(
+            '_helper.cp({}, {})'.format(args, 10 if 'r' in opts else 0))
+
+    def do_rm(self, line: str) -> None:
+        """Delete files from the board:
+            %rm file1 [file2 ...]"""
+        opts, args = '', list(self.split(line))
+        if args and args[0][0] == "-":
+            opts, *args = args
+        self.write_exec(
+            '_helper.rm({}, {})'.format(args, 10 if 'r' in opts else 0))
+
+    def do_get(self, line: str) -> None:
+        """Copy a file from the board to a local folder:\n
+            %get file1 [file2 ...]"""
+        for arg in self.split(line):
+            with catcher(self.write):
+                self.pyb.fs_get(arg, os.path.basename(arg))
+
+    def do_put(self, line: str) -> None:
+        """Copy local files to the current folder on the board:
+            %put file [file2 ...]"""
+        for arg in self.split(line, local=True):
+            with catcher(self.write):
+                self.pyb.fs_put(arg, os.path.basename(arg))
+
+    ## Directory commands
+    def do_cd(self, line: str) -> None:
         """Change the current direcory on the board (with os.setpwd()):
             %cd /lib"""
-        args = line.split()
-        res = self.pyb.exec_(
-            'import uos;uos.chdir("{}");print(uos.getcwd())'
-            .format(args[0] if args else '/'))
-        if res: self.write(res[:-1])
+        arg = next(self.split(line), '/')
+        try:
+            self.write_exec(
+                'import uos;_f="{}";uos.stat(_f);uos.chdir(_f)\n'
+                'print(uos.getcwd())'
+                .format(arg))
+        except PyboardError as err:
+            print(err)
+        except KeyboardInterrupt:
+            pass
 
-    def do_pwd(self, line):
-        """Print the current working directory on the board:\n    %pwd"""
-        res = self.pyb.exec_('import uos;print(uos.getcwd())')
-        if res: self.write(res[:-1])
+    def do_pwd(self, line: str) -> None:
+        """Print the current working directory on the board:
+            %pwd"""
+        self.write_exec('import uos;print(uos.getcwd())')
 
-    def do_lcd(self, line):
+    def do_lcd(self, line: str) -> None:
         """Change the current directory on the local host:
             %lcd ..
         This is the same as:
             !cd .."""
-        for arg in line.split():
+        for arg in self.split(line, local=True):
             os.chdir(arg)
 
-    def do_mkdir(self, line):
-        """Create a new directory on the board:\n    %mkdir /test"""
-        for arg in line.split():
-            self.pyb.fs_mkdir(arg)
+    def do_mkdir(self, line: str) -> None:
+        """Create a new directory on the board:
+            %mkdir /test"""
+        for arg in self.split(line):
+            with catcher(self.write):
+                self.pyb.fs_mkdir(arg)
 
-    def do_rmdir(self, line):
+    def do_rmdir(self, line: str) -> None:
         """Delete/remove a directory on the board (if it is empty)
             %rmdir /test"""
-        for arg in line.split():
-            self.pyb.fs_rmdir(arg)
+        for arg in self.split(line):
+            with catcher(self.write):
+                self.pyb.fs_rmdir(arg)
 
-    def do_time(self, line):
+    ## Execute code on the board
+    def do_exec(self, line: str) -> None:
+        """Exec the python code on the board, eg.:
+            %exec print(34 * 35)"""
+        self.write_exec(line)
+
+    def do_eval(self, line: str) -> None:
+        """Eval and print the python code on the board, eg.:
+            %eval 4 * 35"""
+        self.write_exec('print({})'.format(line))
+
+    def do_run(self, line: str) -> None:
+        """Load and run local python files onto the board:
+            %run file1.py [file2.py ...]"""
+        for arg in self.split(line):
+            try:
+                with open(arg) as f:
+                    buf = f.read()
+            except OSError as err:
+                print(OSError, err)
+            else:
+                self.write_exec(buf)
+
+    def do_echo(self, line: str) -> None:
+        """Echo a command line after file pattern expansion:
+           %echo *.py Make*"""
+        for arg in self.split(line):
+            print("{} ".format(arg),  end='')
+        print('')
+
+    ## Board commands
+    def do_uname(self, line: str) -> None:
+        self.write((
+            'Micropython {nodename} ({unique_id}) '
+            '{version} {sysname} {machine}'
+            .format_map(self.board)).encode('utf-8') + b'\r\n')
+
+    def do_time(self, line: str) -> None:
         """Set or print the time on the board:
-            %time set       : Set the RTC clock on the board from the local time
+            %time set       : Set the RTC clock on the board from local time
             %time set utc   : Set the RTC clock on the board from UTC time
             %time           : Print the RTC clock time on the board
         """
         args = line.split()
         if args and args[0] == 'set':
             from time import gmtime, localtime
-            t = gmtime() if len(args) > 1 and args[1] == 'utc' else localtime()
-            res = self.pyb.exec_(
+            t = gmtime() if 'utc' in args else localtime()
+            self.write_exec(
                 'from machine import RTC;RTC().init({})'.format(
-                    (t.tm_year, t.tm_mon, t.tm_mday, 0, t.tm_hour, t.tm_min, t.tm_sec, 0)))
-            if res: self.write(res)
+                    (t.tm_year, t.tm_mon, t.tm_mday, 0,
+                     t.tm_hour, t.tm_min, t.tm_sec, 0)))
         from time import asctime
-        res = self.pyb.exec_('import utime;print(utime.localtime())')
-        t = eval(res)
-        self.write(asctime((t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode())
+        t = self.eval_exec('import utime;print(utime.localtime())')
+        self.write(asctime(
+            (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode('utf-8')
+            + b'\r\n')
 
-    def do_mount(self, line):
-        """Mount a local folder onto the board at \"/remote\" as a Virtual FileSystem:
+    def do_mount(self, line: str) -> None:
+        """Mount a local folder onto the board at \"/remote\" as a
+        Virtual FileSystem:
             %mount [folder]   : If no folder specified use \".\""""
-        args = line.split()
-        self.pyb.mount_local(args[0] if args else ".")
-        res = self.pyb.exec_('import uos;print(uos.getcwd())')
-        if res: self.write(res)
+        arg = ''
+        with catcher(self.write):
+            arg = next(self.split(line, local=True), '.')
+            self.pyb.mount_local(arg)
+        self.write(
+            'Mounted local folder {} on /remote\r\n'
+            .format(os.path.realpath(arg)).encode('utf-8'))
+        self.write_exec('import uos;print(uos.getcwd())')
 
-    def do_umount(self, line):
+    def do_umount(self, line: str) -> None:
         """Unmount any Virtual Filesystem mounted at \"/remote\" on the board:
             %umount"""
         # Must chdir before umount or bad things happen.
-        self.pyb.exec_('import uos;uos.getcwd()[:7]=="/remote" and uos.chdir("/")')
-        res = self.pyb.exec_('uos.umount("/remote")')
-        if res: self.write(res)
-        try:
-            # Unhook the SerialIntercept
-            self.pyb.serial = pyb.serial.orig_serial
-        except AttributeError:
-            pass
+        self.write_exec(
+            'import uos;uos.getcwd()[:7]=="/remote" and uos.chdir("/")')
+        self.write_exec('uos.umount("/remote")')
+        # Unhook the SerialIntercept
+        if isinstance(self.pyb, SerialIntercept):
+            self.pyb.serial = self.pyb.orig_serial
         self.pyb.mounted = False
-        res = self.pyb.exec_('print(uos.getcwd())')
-        if res: self.write(res)  # Print the current directory in case it changed
+        self.write_exec('print(uos.getcwd())')
 
-    def do_gc(self, line):
+    def do_free(self, line: str) -> None:
+        """Print the free and used memory:
+            %free"""
+        args = line.split()
+        verbose = '1' if args and args[0] == '-v' else ''
+        self.write_exec(
+            'from micropython import mem_info; mem_info({})'.format(verbose))
+
+    def do_df(self, line: str) -> None:
+        """Print the free and used flash storage:
+            %df"""
+        with catcher(self.write):
+            _, bsz, tot, free, *_ = self.eval_exec(
+                'from uos import statvfs; print(statvfs("/"))')
+            print("{:10} {:>9} {:>9} {:>9} {:>3}% {}".format(
+                "", "Bytes", "Used", "Free", "Use", "Mounted on"))
+            print("{:10} {:9d} {:9d} {:9d} {:3d}% {}".format(
+                "/", tot * bsz, (tot - free) * bsz, free * bsz,
+                round(100 * (1 - free / tot)), "/"))
+
+    def do_gc(self, line: str) -> None:
         """Run the micropython garbage collector on the board to free memory.
         Will also print the free memory before and after gc:
             %gc"""
-        res = self.pyb.exec_(
-            'from gc import mem_free,collect;'
-            'print("Before GC: Free bytes =", mem_free());'
-            'collect();'
-            'print("After  GC: Free bytes =", mem_free());'
-        )
-        if res: self.write(res)
+        with catcher(self.write):
+            before, after = self.eval_exec(
+                'from gc import mem_free,collect;'
+                'b=mem_free();collect();print([b,mem_free()])')
+            print("Before GC: Free bytes =", before)
+            print("After  GC: Free bytes =", after)
+
+    def do_shell(self, line: str) -> None:    # So we can "%!cd .."
+        """Execute shell commands from the "%" prompt as well, eg:
+            %!date
+        """
+        args = line.split()
+        if args and len(args) == 2 and args[0] == 'cd':
+            os.chdir(args[1])
+        else:
+            os.system(line)
+
+    ## File and directory completion functions
+    def complete_filename(
+            self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
+        'Return a list of filenames on the board starting with "word".'
+        words: List[str] = []
+        with catcher(self.write):
+            words = self.eval_exec(
+                '_helper.f_m("{}")'.format(word))
+            return words
+        return []
+
+    def complete_directory(
+            self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
+        'Return a list of directories on the board starting with "match".'
+        return [
+            f for f in self.complete_filename(word, line, begidx, endidx)
+            if f.endswith('/')]
+
+    def complete_local_filename(
+            self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
+        'Return a list of local filenames starting with "match".'
+        with catcher(self.write):
+            sep = word.rfind('/')
+            d, match = word[:sep + 1], word[sep + 1:]
+            _, dirs, files = next(os.walk(d or '.'))
+            files = [d + f for f in files if f.startswith(match)]
+            files.extend(d + f + '/' for f in dirs if f.startswith(match))
+            files.sort()
+            return files
+        return []
+
+    def complete_local_directory(
+            self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
+        'Return a list of local directories starting with "match".'
+        return [
+            f for f in self.complete_filename(word, line, begidx, endidx)
+            if f.endswith('/')]
+
+    ## Command line parsing, splitting and globbing
+    def glob_remote(self, path: str) -> Generator[str, None, None]:
+        'Expand glob patterns in the filename part of "path".'
+        sep = path.rfind('/')
+        dir, pattern = path[:sep + 1], path[sep + 1:]
+        files = []
+        with catcher(self.write):
+            files = self.eval_exec('_helper.f_m("{}")'.format(dir))
+        return (                        # Just return the generator
+            f for f in files
+            if f[0] != '.' and fnmatch.fnmatch(f, pattern))
+
+    def split(
+            self, line: str,
+            local: bool = False) -> Generator[str, None, None]:
+        'Split the command line into tokens and expand any glob patterns.'
+        args = shlex.split(line)
+        splits = [i for i, a in enumerate(args) if a == ';']
+        for s in reversed(splits):
+            self.cmdqueue.append(' '.join(args[s + 1:]))
+            args = args[:s]
+        for arg in args:
+            at_least_one = False
+            for f in (glob.iglob(arg) if local else self.glob_remote(arg)):
+                at_least_one = True
+                yield f
+            if not at_least_one:
+                yield arg       # if no match - just return the glob pattern
+
+    ## Load and manage helper code on the board
+    def reload_hooks(self) -> None:
+        'Load/reload the helper code onto the micropython board.'
+        self.write_exec(self._helper.cmd_hook_code)
+        self.hooks_loaded = True
+        self.write_exec(
+            '_helper.columns, _helper.localtime_offset = {}, {}'.format(
+                shutil.get_terminal_size().columns, -time.timezone))
+        self.board.update(      # Update the board params from uos.uname()
+            self.eval_exec('import uos;print("dict{}".format(uos.uname()))'))
+        self.board['platform'], self.board['unique_id'] = self.eval_exec(
+            'from machine import unique_id;from sys import platform\n'
+            'print("({}, {})".format(repr(platform), unique_id()))')
+        self.board['unique_id'] = self.board['unique_id'].hex(':')
+        self.board['id'] = self.board['unique_id'][-8:]    # Last 3 octets
+
+    def reset_hooks(self) -> None:
+        self.hooks_loaded = False
+
+    ## Cmd control functions
+    def preloop(self) -> None:
+        if not self.hooks_loaded:
+            self.reload_hooks()     # Load the helper code onto the board
+        self.single_cmd_mode = True
+        self.prompt = self.base_prompt
+
+    def postloop(self) -> None:
+        print(self.base_prompt[:-1], end='')
+
+    def precmd(self, line: str) -> str:
+        if not self.single_cmd_mode and line and line[0] == "%":
+            return line[1:]         # Discard any leading '%' in multi-cmd mode
+        else:
+            return line
+
+    def postcmd(self, stop: Any, line: str) -> bool:
+        if not self.single_cmd_mode:
+            self.set_prompt()       # Setup our complicated prompt
+        # Exit if we are in single command mode and no commands in the queue
+        return self.single_cmd_mode and not self.cmdqueue
+
+    def emptyline(self) -> bool:    # Else empty lines repeat last command
+        return True
+
+    def default(self, line: str) -> bool:
+        if self.single_cmd_mode and line.strip() == "%":
+            self.prompt = "%% "
+            self.write(
+                b'Enter magic commands (try "help" for a list)\n'
+                b'Type "quit" or ctrl-D to return to micropython:\n')
+            self.single_cmd_mode = False
+        elif (not self.single_cmd_mode and
+              line.strip() in ('exit', 'quit', 'EOF')):
+            self.prompt = self.base_prompt
+            self.single_cmd_mode = True
+            if line.strip() == 'EOF':
+                print()
+        else:
+            self.write('Unknown command: "{}"\r\n'.format(
+                line.strip()).encode())
+        return True
+
+    def set_prompt(self) -> None:
+        pwd: str; alloc: int; free: int
+        pwd, alloc, free = self.eval_exec('_helper.pr()')
+        alloc, free = int(alloc), int(free)
+        free_pc = round(100 * free / (alloc + free))
+
+        # Update useful keys for the prompt
+        self.board['pwd']       = pwd
+        self.board['free']      = free
+        self.board['free_pc']   = free_pc
+
+        prompt_colours = {
+            'prompt':   'yellow',
+            'pwd':      ('magenta' if pwd.startswith('/remote') else
+                         self.colour.dir_colour),
+            'free':     ('green' if free_pc > 50 else
+                         'yellow' if free_pc > 25 else
+                         'red'),
+            'free_pc':  ('green' if free_pc > 50 else
+                         'yellow' if free_pc > 25 else
+                         'red'),
+        }
+        prompt_map = {
+            k: self.colour(
+                prompt_colours.get(k, ''),
+                v, reset=prompt_colours['prompt'])
+            for k, v in self.board.items()}
+        fmt = '{dev} {platform} {id} {pwd} [{free}] % '
+        fmt = self.colour(prompt_colours['prompt'], fmt)
+        self.prompt = fmt.format_map(prompt_map)
+
 
 if __name__ == "__main__":
     sys.exit(main.main())
