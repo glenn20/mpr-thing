@@ -24,7 +24,7 @@
 
 # vscode-fold=2
 
-import os, select, re, sys
+import os, select, re, sys, readline
 from typing import (
     Any, Dict, Generator, Union, Callable, Optional, List, Tuple, cast)
 
@@ -142,6 +142,9 @@ def my_do_repl_main_loop(
     'An overload function for the main repl loop in "mpremote".'
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
     local, remote = LocalCmd(), RemoteCmd(pyb, console_out_write)
+    history_file = os.path.expanduser('~/.mpr-history')
+    if os.path.isfile(history_file):
+        readline.read_history_file(history_file)
     while True:
         if isinstance(console_in, ConsolePosix):
             # TODO pyb.serial might not have fd
@@ -231,6 +234,7 @@ def my_do_repl_main_loop(
                         at_prompt = True
                 else:
                     prompt_char_count = 0
+    readline.write_history_file(history_file)
 
 
 from mpremote import main
@@ -239,7 +243,7 @@ from mpremote import main
 main.do_repl_main_loop = my_do_repl_main_loop
 
 # The following could be extracted into command.py
-import time, cmd, shutil, readline, traceback
+import time, cmd, shutil, traceback
 import shlex, glob, fnmatch, subprocess
 
 
@@ -322,6 +326,9 @@ class AnsiColour:
     def enable(self, enable: bool = True) -> None:
         """Enable or disable colourising of text with ansi escapes."""
         self._enable = enable
+
+    def ansi(self, spec: str, bold: Optional[bool] = None) -> str:
+        return '\x1b[{}m'.format(self.bold(self.colour.get(spec, spec), bold))
 
     def colourise(
             self, spec: str, word: str,
@@ -519,10 +526,12 @@ class _MagicHelper:
             matches = '[]'
         print(matches)
 
-    from gc import mem_alloc, mem_free
+    import gc
 
     def pr(self):
-        print('("',uos.getcwd(),'",',mem_alloc(),',',mem_free(),')')
+        print(
+            '("',uos.getcwd(),'",',gc.mem_alloc(),',',gc.mem_free(),')',
+            sep='')
 
 _helper = _MagicHelper()
 """
@@ -648,6 +657,7 @@ class RemoteCmd(cmd.Cmd):
         # The shortname/alias for the device, eg: '/dev/ttyUSB0' -> 'u0'
         match = re.match(r'^/dev/tty(.).*(.)$', self.board['device'].lower())
         self.board['dev'] = ''.join(match.groups()) if match else '??'
+        self.board.update({c: self.colour.ansi(c) for c in self.colour.colour})
         readline.set_completer_delims(' \t\n>;')
         super().__init__()
 
@@ -779,8 +789,7 @@ class RemoteCmd(cmd.Cmd):
         arg = next(self.split(line), '/')
         try:
             self.write_exec(
-                'import uos;_f="{}";uos.stat(_f);uos.chdir(_f)\n'
-                'print(uos.getcwd())'
+                'import uos;_f="{}";uos.stat(_f);uos.chdir(_f)'
                 .format(arg))
         except PyboardError as err:
             print(err)
@@ -872,16 +881,20 @@ class RemoteCmd(cmd.Cmd):
             + b'\r\n')
 
     def do_mount(self, line: str) -> None:
-        """Mount a local folder onto the board at \"/remote\" as a
+        """Mount a local folder onto the board at "/remote" as a
         Virtual FileSystem:
-            %mount [folder]   : If no folder specified use \".\""""
+            %mount [folder]   : If no folder specified use '.'"""
         arg = ''
         with catcher(self.write):
-            arg = next(self.split(line, local=True), '.')
+            # Don't use relative paths - these can change if we "!cd .."
+            arg = os.path.realpath(next(self.split(line, local=True), '.'))
+            if not os.path.isdir(arg):
+                print("%mount: No such directory:", arg)
+                return
             self.pyb.mount_local(arg)
         self.write(
             'Mounted local folder {} on /remote\r\n'
-            .format(os.path.realpath(arg)).encode('utf-8'))
+            .format(arg).encode('utf-8'))
         self.write_exec('import uos;print(uos.getcwd())')
 
     def do_umount(self, line: str) -> None:
@@ -1079,9 +1092,6 @@ class RemoteCmd(cmd.Cmd):
         self.board['free_pc']   = free_pc
 
         prompt_colours = {
-            'prompt':   'yellow',
-            'pwd':      ('magenta' if pwd.startswith('/remote') else
-                         self.colour.dir_colour),
             'free':     ('green' if free_pc > 50 else
                          'yellow' if free_pc > 25 else
                          'red'),
@@ -1089,13 +1099,15 @@ class RemoteCmd(cmd.Cmd):
                          'yellow' if free_pc > 25 else
                          'red'),
         }
+        if pwd.startswith('/remote'):
+            prompt_colours['pwd'] = 'magenta'
         prompt_map = {
             k: self.colour(
                 prompt_colours.get(k, ''),
-                v, reset=prompt_colours['prompt'])
+                v)
             for k, v in self.board.items()}
-        fmt = '{dev} {platform} {id} {pwd} [{free}] % '
-        fmt = self.colour(prompt_colours['prompt'], fmt)
+        fmt = ('{green}{dev}:{platform}({free}{green})'
+               '{yellow}{pwd}{yellow} % {reset}')
         self.prompt = fmt.format_map(prompt_map)
 
 
