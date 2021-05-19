@@ -734,7 +734,7 @@ class RemoteCmd(cmd.Cmd):
             os.close(fd)
             with catcher(self.write):
                 self.pyb.fs_get(arg, fname)
-                if 0 == os.system(f'${{EDITOR:-/usr/bin/vi}} {fname}'):
+                if 0 == os.system(f'eval ${{EDITOR:-/usr/bin/vi}} {fname}'):
                     self.pyb.fs_put(fname, arg)
             os.remove(fname)
 
