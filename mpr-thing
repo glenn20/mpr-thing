@@ -25,8 +25,6 @@
 # vscode-fold=2
 
 import os, select, re, sys, readline
-from typing import (
-    Any, Dict, Generator, Union, Callable, Optional, List, Tuple, cast)
 
 from mpremote.pyboard import PyboardError
 from mpremote.pyboardextended import PyboardExtended, SerialIntercept
@@ -35,8 +33,18 @@ try:
 except ImportError:
     from mpremote.main import ConsolePosix, ConsoleWindows   # type: ignore
 
+from typing import (
+    Any, Dict, Generator, Union, Callable, Optional, List, Tuple, cast)
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
+
+from colorama import init as colorama_init  # For ansi colour on Windows
+
+colorama_init()
+
+HISTORY_FILE = '~/.mpr-thing.history'
+OPTIONS_FILE = '~/.mpr-thing.options'
+RC_FILE      = '~/.mpr-thing.rc'
 
 
 def hard_reset(pyb: PyboardExtended) -> None:
@@ -77,15 +85,22 @@ def cursor_column(
 
 # A context manager to catch exceptions from pyboard and others
 class catcher:
+    # Save the last exception for use outside the context manager
+    exception: Union[Exception, PyboardError, None] = None
+
     def __init__(self, write_fn: Writer):
         self.write_fn = write_fn
+        catcher.exception = None
 
     def __enter__(self) -> Any:
+        catcher.exception = None
         pass
 
     def __exit__(
             self, exc_type: Any, value: Exception, tr: Any) -> bool:
+        catcher.exception = None
         if exc_type == PyboardError:
+            catcher.exception = value
             self.write_fn(b"PyboardError: ")
             if len(value.args) == 3:    # Raised by Pyboard.exec_()
                 self.write_fn(value.args[1])
@@ -93,10 +108,12 @@ class catcher:
             else:                       # Others just include a single message
                 self.write_fn(value.args[0].encode())
         elif exc_type == KeyboardInterrupt:
+            catcher.exception = value
             pass
         elif exc_type in (OSError, FileNotFoundError):
             self.write_fn("{}: {}".format(exc_type.__name__, value).encode())
         elif value is not None:
+            catcher.exception = value
             self.write_fn(b"Error:: ")
             for arg in value.args:
                 self.write_fn(bytes("{}".format(arg), 'utf8'))
@@ -142,7 +159,7 @@ def my_do_repl_main_loop(
     'An overload function for the main repl loop in "mpremote".'
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
     local, remote = LocalCmd(), RemoteCmd(pyb, console_out_write)
-    history_file = os.path.expanduser('~/.mpr-history')
+    history_file = os.path.expanduser(HISTORY_FILE)
     if os.path.isfile(history_file):
         readline.read_history_file(history_file)
     while True:
@@ -183,6 +200,8 @@ def my_do_repl_main_loop(
             elif (c == b"!" and at_prompt  # Magic sequence if at start of line
                     and (beginning_of_line or
                          cursor_column(console_in, console_out_write) == 5)):
+                console_out_write(b"\x1b[2K")  # Clear other chars on line
+                pyb.serial.write(c)
                 console_in.exit()
                 with raw_repl(pyb, console_out_write, soft_reset=False):
                     local.cmdloop()
@@ -192,8 +211,8 @@ def my_do_repl_main_loop(
             elif (c == b"%" and at_prompt  # Magic sequence if at start of line
                     and (beginning_of_line or
                          cursor_column(console_in, console_out_write) == 5)):
+                console_out_write(b"\x1b[2K")  # Clear other chars on line
                 pyb.serial.write(c)
-                # console_out_write(b"\x0b")
                 console_in.exit()
                 with raw_repl(pyb, console_out_write, soft_reset=False):
                     remote.cmdloop()
@@ -244,7 +263,7 @@ main.do_repl_main_loop = my_do_repl_main_loop
 
 # The following could be extracted into command.py
 import time, cmd, shutil, traceback
-import shlex, glob, fnmatch, subprocess
+import shlex, glob, fnmatch, subprocess, itertools
 
 
 class LocalCmd(cmd.Cmd):
@@ -308,7 +327,7 @@ class AnsiColour:
             subprocess.check_output(
                 'eval `dircolors`; echo -n $LS_COLORS',
                 shell=True, text=True) or
-            'di=01;34:*.py=01;36:').rstrip(':')
+            'di=01;34:*.py=01;36:').rstrip(':')  # A fallback color spec
         self.spec = {
             k.lstrip('*'): v for k, v in
             (c.split('=') for c in spec.split(':'))} if spec else {}
@@ -316,12 +335,17 @@ class AnsiColour:
             self.spec['*.py'] = '01;36'
         self.dir_colour = self.spec.get('di', '')
         # Dict of ansi colour specs by name
-        self.colour = {  # ie: {'black': '00;30', ... 'white': '00;37'}
+        colours = {  # ie: {'black': '00;30', ... 'white': '00;37'}
             name: '00;3{}'.format(i)
             for i, name in enumerate((
                 'black', 'red', 'green', 'yellow',
                 'blue', 'magenta', 'cyan', 'white'))}
+        self.colour = colours.copy()
+        self.colour.update(     # Add the bright/bold colour variants
+            ('bold-' + x, '01' + spec[2:])
+            for x, spec in colours.items())
         self.colour['reset'] = '0'
+        self.colour['bold'] = '01'
 
     def enable(self, enable: bool = True) -> None:
         """Enable or disable colourising of text with ansi escapes."""
@@ -374,6 +398,25 @@ class AnsiColour:
     def dir(self, file: str, reset: str = '0') -> str:
         """Return "dir" colourised according to the colour "ls" command."""
         return self.colourise(self.dir_colour, file, reset=reset)
+
+    def colour_stack(self, text: str) -> str:
+        """Change the way colour reset sequence ("\x1b[0m") works.
+        Change any reset sequences to pop the colour stack rather than
+        disabling colour altogether."""
+        stack = ['0']
+
+        def ansistack(m: Any) -> Any:
+            # Return the replacement text for the reset sequence
+            colour: str = m.group(2)
+            if colour != '0':   # If this is not a colour reset sequence
+                stack.append(colour)            # Save on the colour stack
+            else:               # If this is a colour reset sequence
+                if len(stack) > 0: stack.pop()  # Pop the stack first
+                colour = stack[-1]      # Replace with top colour on stack
+            return '\x1b[' + colour + 'm'
+
+        return (re.sub('(\x1b\\[)([0-9;]+)(m)', ansistack, text) +
+                (self.ansi('reset') if stack else ''))  # Force reset at end
 
 
 ansi_colour = AnsiColour()
@@ -513,6 +556,16 @@ class _MagicHelper:
             else:
                 print('Unable to remove:', f)
 
+    def mkdir(self, dir):
+        import uos
+        try:
+            s = uos.stat(dir)
+        except OSError:
+            uos.mkdir(dir)
+            print(True)
+        else:
+            print((s[0] & 0x4000) != 0)
+
     def f_m(self, match):  # file_matches for filename completion
         sep = match.rfind('/')
         d, match = match[:sep+1], match[sep+1:]
@@ -643,15 +696,23 @@ class RemoteCmd(cmd.Cmd):
     doc_header: str = (
         'Execute "%magic" commands at the micropython prompt, eg: %ls /\n'
         'Use "%%" to enter multiple command mode.')
+    remote_cmds = (  # Commands for which glob expansion happens on the board
+        'ls', 'cat', 'edit', 'touch', 'mv', 'cp', 'rm', 'get',
+        'cd', 'mkdir', 'rmdir', 'echo')
 
     def __init__(self, pyb: PyboardExtended, console_out_write: Writer):
         self.pyb                = pyb
         self._helper            = MagicHelper()
         self.write_fn           = console_out_write
         self.prompt             = self.base_prompt
+        self.prompt_fmt         = ('{bold-cyan}{id} {yellow}{platform}'
+                                   ' ({free}){bold-blue}{pwd}> ')
         self.hooks_loaded       = False
+        self.options_loaded     = False
         self.single_cmd_mode    = True
         self.colour             = ansi_colour
+        self.alias              = {}
+        self.alias['ll']        = 'ls -l'
         self.board              = {}
         self.board['device']    = self.pyb.device_name
         # The shortname/alias for the device, eg: '/dev/ttyUSB0' -> 'u0'
@@ -682,6 +743,13 @@ class RemoteCmd(cmd.Cmd):
         self.complete_mount     = fname
         self.complete_lcd       = fname
 
+    def load_rc_file(self, file: str) -> None:
+        with catcher(self.write):
+            with open(os.path.expanduser(OPTIONS_FILE), 'r') as f:
+                lines = list(f)
+            for line in lines:
+                self.onecmd(line)
+
     def write(self, response: bytes) -> None:
         'Call the console writer for output (convert "str" to "bytes").'
         if response:
@@ -690,24 +758,26 @@ class RemoteCmd(cmd.Cmd):
             self.write_fn(response)
 
     ## Execute stuff on the micropython board
-    def exec(self, code: str) -> bytes:
+    def exec(self, code: str, data_consumer: Optional[Writer] = None) -> bytes:
         'Execute some code on the micropython board.'
         response: bytes = b''
         with catcher(self.write):
-            response = self.pyb.exec_(code)
+            response = self.pyb.exec_(code, data_consumer)
         return response
 
     def eval_exec(self, code: str) -> Any:
         return eval(self.exec(code))
 
     def write_exec(self, code: str) -> None:
-        self.write(self.exec(code))
+        def writer(chars: bytes) -> None:
+            self.write(chars)
+        self.exec(code, writer)
 
     ## File commands
-    def do_ls(self, line: str) -> None:
+    def do_ls(self, args: List[str]) -> None:
         """List files on the board:
             %ls [-[lR]] [file_or_dir1 ...]"""
-        opts, args = '', list(self.split(line))
+        opts = ''
         if args and args[0][0] == "-":
             opts, *args = args
         self._helper.ls(self.exec(
@@ -716,19 +786,19 @@ class RemoteCmd(cmd.Cmd):
                 "l" in opts,                 # Use a long-style listing
                 10 if "R" in opts else 0)))  # Max recursion = 10
 
-    def do_cat(self, line: str) -> None:
+    def do_cat(self, args: List[str]) -> None:
         """List the contents of files on the board:
             %cat file [file2 ...]"""
-        for arg in self.split(line):
+        for arg in args:
             with catcher(self.write):
                 self.pyb.fs_cat(arg)
             self.write(b'\r\n')
 
-    def do_edit(self, line: str) -> None:
+    def do_edit(self, args: List[str]) -> None:
         """Copy a file from the board, open it in your editor, then copy it back:
             %edit file1 [file2 ...]
         """
-        for arg in self.split(line):
+        for arg in args:
             import tempfile
             fd, fname = tempfile.mkstemp()
             os.close(fd)
@@ -738,106 +808,124 @@ class RemoteCmd(cmd.Cmd):
                     self.pyb.fs_put(fname, arg)
             os.remove(fname)
 
-    def do_touch(self, line: str) -> None:
+    def do_touch(self, args: List[str]) -> None:
         """Create a file on the board:
             %touch file [file2 ...]"""
-        for arg in self.split(line):
+        for arg in args:
             self.write_exec('open("{}", "a").close()'.format(arg))
 
-    def do_mv(self, line: str) -> None:
-        """Rename/move a file on the board:
-            %mv old new"""
-        args = list(self.split(line))
+    def do_mv(self, args: List[str]) -> None:
+        """Rename/move a file or directory on the board:
+            %mv old new
+            %mv *.py /app"""
         self.write_exec('_helper.mv({})'.format(args))
 
-    def do_cp(self, line: str) -> None:
-        """Make a copy of a file on the board:
-            %cp from to"""
-        opts, args = '', list(self.split(line))
+    def do_cp(self, args: List[str]) -> None:
+        """Make a copy of a file or directory on the board, eg:
+            %cp [-r] existing new
+            %cp *.py /app"""
+        opts = ''
         if args and args[0][0] == "-":
             opts, *args = args
         self.write_exec(
             '_helper.cp({}, {})'.format(args, 10 if 'r' in opts else 0))
 
-    def do_rm(self, line: str) -> None:
+    def do_rm(self, args: List[str]) -> None:
         """Delete files from the board:
-            %rm file1 [file2 ...]"""
-        opts, args = '', list(self.split(line))
+            %rm [-r] file1 [file2 ...]"""
+        opts = ''
         if args and args[0][0] == "-":
             opts, *args = args
         self.write_exec(
             '_helper.rm({}, {})'.format(args, 10 if 'r' in opts else 0))
 
-    def do_get(self, line: str) -> None:
+    def do_get(self, args: List[str]) -> None:  # TODO: implement get -r
         """Copy a file from the board to a local folder:\n
             %get file1 [file2 ...]"""
-        for arg in self.split(line):
+        for arg in args:
             with catcher(self.write):
                 self.pyb.fs_get(arg, os.path.basename(arg))
 
-    def do_put(self, line: str) -> None:
+    def do_put(self, args: List[str]) -> None:
         """Copy local files to the current folder on the board:
             %put file [file2 ...]"""
-        for arg in self.split(line, local=True):
-            with catcher(self.write):
-                self.pyb.fs_put(arg, os.path.basename(arg))
+        opts = ''
+        if args and args[0][0] == "-":
+            opts, *args = args
+        for arg in args:
+            if not os.path.isdir(arg):
+                with catcher(self.write):
+                    self.pyb.fs_put(arg, os.path.basename(arg))
+            elif 'r' in opts:
+                parent = os.path.dirname(arg)
+                for path, _, files in os.walk(arg):
+                    dir = os.path.relpath(path, parent)
+                    if not self.eval_exec('_helper.mkdir("{}")'.format(dir)):
+                        print('%put: not a directory:', dir)
+                        continue
+                    for f in files:
+                        f1, f2 = os.path.join(path, f), os.path.join(dir, f)
+                        with catcher(self.write):
+                            print(f1, '->', f2)
+                            self.pyb.fs_put(f1, f2)
 
     ## Directory commands
-    def do_cd(self, line: str) -> None:
+    def do_cd(self, args: List[str]) -> None:
         """Change the current direcory on the board (with os.setpwd()):
             %cd /lib"""
-        arg = next(self.split(line), '/')
-        try:
-            self.write_exec(
-                'import uos;_f="{}";uos.stat(_f);uos.chdir(_f)'
-                .format(arg))
-        except PyboardError as err:
-            print(err)
-        except KeyboardInterrupt:
-            pass
+        arg = args[0] if args else '/'
+        self.write_exec(
+            'import uos;_f="{}";uos.stat(_f);uos.chdir(_f)'
+            .format(arg))
 
-    def do_pwd(self, line: str) -> None:
+    def do_pwd(self, args: List[str]) -> None:
         """Print the current working directory on the board:
             %pwd"""
+        if args:
+            print('pwd: unexpected args:', args)
         self.write_exec('import uos;print(uos.getcwd())')
 
-    def do_lcd(self, line: str) -> None:
+    def do_lcd(self, args: List[str]) -> None:
         """Change the current directory on the local host:
             %lcd ..
         This is the same as:
             !cd .."""
-        for arg in self.split(line, local=True):
-            os.chdir(arg)
+        for arg in args:
+            with catcher(self.write):
+                os.chdir(arg)
 
-    def do_mkdir(self, line: str) -> None:
+    def do_mkdir(self, args: List[str]) -> None:
         """Create a new directory on the board:
             %mkdir /test"""
-        for arg in self.split(line):
+        for arg in args:
             with catcher(self.write):
                 self.pyb.fs_mkdir(arg)
 
-    def do_rmdir(self, line: str) -> None:
+    def do_rmdir(self, args: List[str]) -> None:
         """Delete/remove a directory on the board (if it is empty)
             %rmdir /test"""
-        for arg in self.split(line):
+        for arg in args:
             with catcher(self.write):
                 self.pyb.fs_rmdir(arg)
 
     ## Execute code on the board
-    def do_exec(self, line: str) -> None:
-        """Exec the python code on the board, eg.:
-            %exec print(34 * 35)"""
-        self.write_exec(line)
+    def do_exec(self, args: List[str]) -> None:
+        """\
+        Exec the python code on the board, eg.:
+            %exec print(34 * 35)
+        "\\n" will be substituted with the end-of-line character, eg:
+            %exec 'print("one")\\nprint("two")' """
+        self.write_exec(' '.join(args).replace('\\n', '\n'))
 
-    def do_eval(self, line: str) -> None:
+    def do_eval(self, args: List[str]) -> None:
         """Eval and print the python code on the board, eg.:
-            %eval 4 * 35"""
-        self.write_exec('print({})'.format(line))
+            %eval 34 * 35"""
+        self.write_exec('print({})'.format(' '.join(args)))
 
-    def do_run(self, line: str) -> None:
+    def do_run(self, args: List[str]) -> None:
         """Load and run local python files onto the board:
             %run file1.py [file2.py ...]"""
-        for arg in self.split(line):
+        for arg in args:
             try:
                 with open(arg) as f:
                     buf = f.read()
@@ -846,27 +934,27 @@ class RemoteCmd(cmd.Cmd):
             else:
                 self.write_exec(buf)
 
-    def do_echo(self, line: str) -> None:
+    def do_echo(self, args: List[str]) -> None:
         """Echo a command line after file pattern expansion:
            %echo *.py Make*"""
-        for arg in self.split(line):
-            print("{} ".format(arg),  end='')
-        print('')
+        print(' '.join(args))
 
     ## Board commands
-    def do_uname(self, line: str) -> None:
+    def do_uname(self, args: List[str]) -> None:
+        """Print information about the hardware and software:
+            %uname"""
+        if args:
+            print('uname: unexpected args:', args)
         self.write((
             'Micropython {nodename} ({unique_id}) '
             '{version} {sysname} {machine}'
             .format_map(self.board)).encode('utf-8') + b'\r\n')
 
-    def do_time(self, line: str) -> None:
+    def do_time(self, args: List[str]) -> None:
         """Set or print the time on the board:
             %time set       : Set the RTC clock on the board from local time
             %time set utc   : Set the RTC clock on the board from UTC time
-            %time           : Print the RTC clock time on the board
-        """
-        args = line.split()
+            %time           : Print the RTC clock time on the board"""
         if args and args[0] == 'set':
             from time import gmtime, localtime
             t = gmtime() if 'utc' in args else localtime()
@@ -880,26 +968,26 @@ class RemoteCmd(cmd.Cmd):
             (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode('utf-8')
             + b'\r\n')
 
-    def do_mount(self, line: str) -> None:
+    def do_mount(self, args: List[str]) -> None:
         """Mount a local folder onto the board at "/remote" as a
         Virtual FileSystem:
             %mount [folder]   : If no folder specified use '.'"""
-        arg = ''
-        with catcher(self.write):
-            # Don't use relative paths - these can change if we "!cd .."
-            arg = os.path.realpath(next(self.split(line, local=True), '.'))
-            if not os.path.isdir(arg):
-                print("%mount: No such directory:", arg)
-                return
-            self.pyb.mount_local(arg)
+        # Don't use relative paths - these can change if we "!cd .."
+        path = os.path.realpath(args[0] if args else '.')
+        if not os.path.isdir(path):
+            print("%mount: No such directory:", path)
+            return
+        self.pyb.mount_local(path)
         self.write(
             'Mounted local folder {} on /remote\r\n'
-            .format(arg).encode('utf-8'))
+            .format(path).encode('utf-8'))
         self.write_exec('import uos;print(uos.getcwd())')
 
-    def do_umount(self, line: str) -> None:
+    def do_umount(self, args: List[str]) -> None:
         """Unmount any Virtual Filesystem mounted at \"/remote\" on the board:
             %umount"""
+        if args:
+            print('umount: unexpected args:', args)
         # Must chdir before umount or bad things happen.
         self.write_exec(
             'import uos;uos.getcwd()[:7]=="/remote" and uos.chdir("/")')
@@ -910,17 +998,18 @@ class RemoteCmd(cmd.Cmd):
         self.pyb.mounted = False
         self.write_exec('print(uos.getcwd())')
 
-    def do_free(self, line: str) -> None:
+    def do_free(self, args: List[str]) -> None:
         """Print the free and used memory:
             %free"""
-        args = line.split()
         verbose = '1' if args and args[0] == '-v' else ''
         self.write_exec(
             'from micropython import mem_info; mem_info({})'.format(verbose))
 
-    def do_df(self, line: str) -> None:
+    def do_df(self, args: List[str]) -> None:
         """Print the free and used flash storage:
             %df"""
+        if args:
+            print('df: unexpected args:', args)
         with catcher(self.write):
             _, bsz, tot, free, *_ = self.eval_exec(
                 'from uos import statvfs; print(statvfs("/"))')
@@ -930,10 +1019,12 @@ class RemoteCmd(cmd.Cmd):
                 "/", tot * bsz, (tot - free) * bsz, free * bsz,
                 round(100 * (1 - free / tot)), "/"))
 
-    def do_gc(self, line: str) -> None:
+    def do_gc(self, args: List[str]) -> None:
         """Run the micropython garbage collector on the board to free memory.
         Will also print the free memory before and after gc:
             %gc"""
+        if args:
+            print('gc: unexpected args:', args)
         with catcher(self.write):
             before, after = self.eval_exec(
                 'from gc import mem_free,collect;'
@@ -941,15 +1032,64 @@ class RemoteCmd(cmd.Cmd):
             print("Before GC: Free bytes =", before)
             print("After  GC: Free bytes =", after)
 
-    def do_shell(self, line: str) -> None:    # So we can "%!cd .."
+    ## Extra commands
+    def do_shell(self, args: List[str]) -> None:
         """Execute shell commands from the "%" prompt as well, eg:
-            %!date
-        """
-        args = line.split()
+            %!date"""
         if args and len(args) == 2 and args[0] == 'cd':
             os.chdir(args[1])
         else:
-            os.system(line)
+            os.system(' '.join(args))
+
+    def do_alias(self, args: List[str]) -> None:
+        """Assign an alias for other commands: eg:
+            %alias ll="ls -l" lr="ls -lR"
+            %alias connect='exec "network.WLAN(0).connect(\"{}\", \"{}\")"'
+        You can use "{}" or "{2}" format specifiers to consume arguments when
+        you use the alias: eg:
+            %connect ssid password
+        Any arguments which are not consumed by format specfiers will be
+        added to the command after expanding the alias, eg:
+            %ll /lib
+        NOTE: "ll" and "lr" are pre-builtin as aliases as above.
+        You can not override existing commands with an alias.
+        """
+        for arg in args:
+            print(arg)
+            alias, value = arg.split('=', maxsplit=1)
+            if not alias or not value:
+                print('Invalid alias: "{}"'.format(arg))
+                continue
+            self.alias[alias] = value.strip()
+
+    def do_set(self, args: List[str]) -> None:
+        """Set some options, eg:
+            %set prompt='{cyan}{platform}@{dev}-{id}-({free}) {blue}{pwd}> '
+            %set colour=pwd=blue
+        """
+        for arg in args:
+            try:
+                key, value = arg.split('=', maxsplit=1)
+            except ValueError:
+                key, value = '', ''
+            if not key or not value:
+                print("%set: invalid option setting:", arg)
+                continue
+            if key == 'prompt':
+                saved = self.prompt_fmt
+                with catcher(self.write):
+                    self.prompt_fmt = value
+                    backup = self.prompt
+                    self.set_prompt()
+                    self.prompt = backup
+                if catcher.exception:   # Restore the old prompt
+                    self.prompt_fmt = saved
+            else:
+                print("%set: unknown key:", key)
+        # Save the options in a startup file
+        with open(os.path.expanduser(OPTIONS_FILE), 'w') as f:
+            f.write('# Do not edit: will be overwritten by mpr-thing.\n')
+            f.write('set prompt="{}"\n'.format(self.prompt_fmt))
 
     ## File and directory completion functions
     def complete_filename(
@@ -989,104 +1129,31 @@ class RemoteCmd(cmd.Cmd):
             f for f in self.complete_filename(word, line, begidx, endidx)
             if f.endswith('/')]
 
-    ## Command line parsing, splitting and globbing
-    def glob_remote(self, path: str) -> Generator[str, None, None]:
-        'Expand glob patterns in the filename part of "path".'
-        sep = path.rfind('/')
-        dir, pattern = path[:sep + 1], path[sep + 1:]
-        files = []
-        with catcher(self.write):
-            files = self.eval_exec('_helper.f_m("{}")'.format(dir))
-        return (                        # Just return the generator
-            f for f in files
-            if f[0] != '.' and fnmatch.fnmatch(f, pattern))
-
-    def split(
-            self, line: str,
-            local: bool = False) -> Generator[str, None, None]:
-        'Split the command line into tokens and expand any glob patterns.'
-        args = shlex.split(line)
-        splits = [i for i, a in enumerate(args) if a == ';']
-        for s in reversed(splits):
-            self.cmdqueue.append(' '.join(args[s + 1:]))
-            args = args[:s]
-        for arg in args:
-            at_least_one = False
-            for f in (glob.iglob(arg) if local else self.glob_remote(arg)):
-                at_least_one = True
-                yield f
-            if not at_least_one:
-                yield arg       # if no match - just return the glob pattern
-
-    ## Load and manage helper code on the board
     def reload_hooks(self) -> None:
         'Load/reload the helper code onto the micropython board.'
         self.write_exec(self._helper.cmd_hook_code)
         self.hooks_loaded = True
-        self.write_exec(
-            '_helper.columns, _helper.localtime_offset = {}, {}'.format(
-                shutil.get_terminal_size().columns, -time.timezone))
+        self.write_exec('_helper.localtime_offset = {}'.format(-time.timezone))
         self.board.update(      # Update the board params from uos.uname()
             self.eval_exec('import uos;print("dict{}".format(uos.uname()))'))
-        self.board['platform'], self.board['unique_id'] = self.eval_exec(
-            'from machine import unique_id;from sys import platform\n'
-            'print("({}, {})".format(repr(platform), unique_id()))')
+        self.board['platform'], self.board['unique_id'] = (
+            self.eval_exec(
+                'from machine import unique_id;from sys import platform\n'
+                'print("({}, {})".format(repr(platform), unique_id()))'))
         self.board['unique_id'] = self.board['unique_id'].hex(':')
-        self.board['id'] = self.board['unique_id'][-8:]    # Last 3 octets
+        self.board['id']        = self.board['unique_id'][-8:]  # Last 3 octets
 
     def reset_hooks(self) -> None:
         self.hooks_loaded = False
 
-    ## Cmd control functions
-    def preloop(self) -> None:
-        if not self.hooks_loaded:
-            self.reload_hooks()     # Load the helper code onto the board
-        self.single_cmd_mode = True
-        self.prompt = self.base_prompt
-
-    def postloop(self) -> None:
-        print(self.base_prompt[:-1], end='')
-
-    def precmd(self, line: str) -> str:
-        if not self.single_cmd_mode and line and line[0] == "%":
-            return line[1:]         # Discard any leading '%' in multi-cmd mode
-        else:
-            return line
-
-    def postcmd(self, stop: Any, line: str) -> bool:
-        if not self.single_cmd_mode:
-            self.set_prompt()       # Setup our complicated prompt
-        # Exit if we are in single command mode and no commands in the queue
-        return self.single_cmd_mode and not self.cmdqueue
-
-    def emptyline(self) -> bool:    # Else empty lines repeat last command
-        return True
-
-    def default(self, line: str) -> bool:
-        if self.single_cmd_mode and line.strip() == "%":
-            self.prompt = "%% "
-            self.write(
-                b'Enter magic commands (try "help" for a list)\n'
-                b'Type "quit" or ctrl-D to return to micropython:\n')
-            self.single_cmd_mode = False
-        elif (not self.single_cmd_mode and
-              line.strip() in ('exit', 'quit', 'EOF')):
-            self.prompt = self.base_prompt
-            self.single_cmd_mode = True
-            if line.strip() == 'EOF':
-                print()
-        else:
-            self.write('Unknown command: "{}"\r\n'.format(
-                line.strip()).encode())
-        return True
-
     def set_prompt(self) -> None:
+        "Set the prompt using the prompt_fmt string."
         pwd: str; alloc: int; free: int
         pwd, alloc, free = self.eval_exec('_helper.pr()')
         alloc, free = int(alloc), int(free)
         free_pc = round(100 * free / (alloc + free))
 
-        # Update useful keys for the prompt
+        # Update some dynamic info for the prompt
         self.board['pwd']       = pwd
         self.board['free']      = free
         self.board['free_pc']   = free_pc
@@ -1099,16 +1166,159 @@ class RemoteCmd(cmd.Cmd):
                          'yellow' if free_pc > 25 else
                          'red'),
         }
-        if pwd.startswith('/remote'):
-            prompt_colours['pwd'] = 'magenta'
         prompt_map = {
-            k: self.colour(
-                prompt_colours.get(k, ''),
-                v)
+            k: self.colour(prompt_colours.get(k, ''), v)
             for k, v in self.board.items()}
-        fmt = ('{green}{dev}:{platform}({free}{green})'
-               '{yellow}{pwd}{yellow} % {reset}')
-        self.prompt = fmt.format_map(prompt_map)
+
+        self.prompt = (
+            # Make GNU readline calculate the length of the colour prompt
+            # correctly. See readline.rl_expand_prompt() docs.
+            re.sub(
+                '(\x1b\\[[0-9;]+m)', '\x01\\1\x02',
+                # Make colour reset act like a colour stack
+                self.colour.colour_stack(
+                    # Build the prompt from prompt_fmt (set with %set cmd)
+                    self.prompt_fmt.format_map(prompt_map))))
+
+    ## Command line parsing, splitting and globbing
+    def glob_remote(self, path: str) -> Generator[str, None, None]:
+        'Expand glob patterns in the filename part of "path".'
+        sep = path.rfind('/')
+        dir, pattern = path[:sep + 1], path[sep + 1:]
+        if '*' not in pattern and '?' not in pattern:
+            return (f for f in [])  # type: ignore
+        files = []
+        with catcher(self.write):
+            files = self.eval_exec('_helper.f_m("{}")'.format(dir))
+        return (                        # Just return the generator
+            f for f in files
+            if f[0] != '.' and fnmatch.fnmatch(f, pattern))
+
+    def glob(self, cmd: str, args: List[str]) -> Generator[str, None, None]:
+        remote_glob = cmd in self.remote_cmds
+        for arg in args:
+            if arg:
+                at_least_one = False
+                for f in (self.glob_remote(arg) if remote_glob else
+                          glob.iglob(arg)):
+                    at_least_one = True
+                    yield f
+                if not at_least_one:
+                    yield arg   # if no match - just return the glob pattern
+
+    def split(self, line: str) -> List[str]:
+        'Split the command line into tokens and expand any glob patterns.'
+        # punctuation_chars=True ensures semicolons can split commands
+        allargs = list(shlex.shlex(line, None, True, True))
+
+        # Semicolons separate commands: make a list of args for each sub-cmd
+        # [[arg1, ...], [arg1,...], ...]
+        argslist = (
+            list(l) for key, l in
+            itertools.groupby(allargs, lambda arg: arg == ';') if not key)
+        # If first arg was ';' use empty args, else use the first in argslist
+        args = next(argslist) if allargs and allargs[0] != ';' else []
+        # Push the rest of the args back onto the cmd queue
+        # TODO: Check what happens when args are re-parsed from cmdqueue
+        self.cmdqueue.extend(list(argslist))  # type: ignore
+        return args
+
+    ## Cmd control functions
+    def preloop(self) -> None:
+        self.prompt = self.colour.ansi('yellow') + self.base_prompt
+        if not self.hooks_loaded:
+            self.reload_hooks()     # Load the helper code onto the board
+        if not self.options_loaded:
+            self.load_rc_file(OPTIONS_FILE)
+            self.options_loaded = True
+        self.single_cmd_mode = True
+
+    def postloop(self) -> None:
+        print(self.colour.ansi('reset') + self.base_prompt[:-1], end='')
+
+    def precmd(self, line: str) -> str:
+        if isinstance(line, list):
+            return line
+        if not self.single_cmd_mode and line and line[0] == "%":
+            line = line[1:]     # Discard any leading '%' in multi-cmd mode
+
+        return line
+
+    def postcmd(self, stop: Any, line: str) -> bool:
+        if not self.single_cmd_mode:
+            self.set_prompt()       # Setup our complicated prompt
+        # Exit if we are in single command mode and no commands in the queue
+        return self.single_cmd_mode and not self.cmdqueue
+
+    def onecmd(self, line: str) -> bool:
+        """Override the default Cmd.onecmd()."""
+        if isinstance(line, list):
+            # List of str is pushed back onto cmdqueue in self.split()
+            cmd, *args = line
+        else:
+            # A command line read from the input
+            cmd, arg, line = self.parseline(line)
+            args = list(self.split(arg)) if arg else []
+        if not line:
+            return self.emptyline()
+        if not cmd:
+            return self.default(line)
+        self.lastcmd = ''
+        with catcher(self.write):
+            func = getattr(self, 'do_' + cmd, None)
+            if func:
+                func(list(self.glob(cmd, args)))
+            else:
+                return self.default(line)
+        return False
+
+    def emptyline(self) -> bool:
+        return True    # Else empty lines repeat last command
+
+    def default(self, line: str) -> bool:
+        if self.single_cmd_mode and line.strip() == "%":
+            # User typed '%%': Enter command line mode
+            self.prompt = "%% "
+            self.write(
+                b'Enter magic commands (try "help" for a list)\n'
+                b'Type "quit" or ctrl-D to return to micropython:\n')
+            self.single_cmd_mode = False
+            return True
+        elif (not self.single_cmd_mode and
+                line.strip() in ('exit', 'quit', 'EOF')):
+            # End command line mode - typed "quit", "exit" or ctrl-D
+            self.prompt = self.base_prompt
+            self.single_cmd_mode = True
+            if line.strip() == 'EOF':
+                print()
+            return True
+
+        # Check for any aliases...
+        args = list(self.split(line))
+        if args and args[0] in self.alias:
+            cmd, *args = args
+            alias = self.alias[cmd]
+
+            # Expand the alias: can include format specifiers: {}, {3}, ...
+            line = alias.format(*args)
+            # Set of arg indices consumed by fmt specifiers: {}, {:23}, ...
+            used = set(range(len(re.findall(r'{(:[^}]+)?}', alias))))
+            # Add args consumed by {3}, {6:>23}, ...
+            used.update(
+                int(n) for n in re.findall(r'{([0-9]+):?[^}]*}', alias))
+            # Add any unused args to the end of the line
+            line = ' '.join((
+                line,
+                ' '.join(arg for n, arg in enumerate(args) if n not in used)))
+
+            print(line)
+            self.onecmd(line)
+            return True
+        elif not args:
+            return True         # Ignore comments
+
+        self.write('Unknown command: "{}"\r\n'.format(line.strip()).encode())
+        return True
 
 
 if __name__ == "__main__":
