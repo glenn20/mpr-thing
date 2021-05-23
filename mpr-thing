@@ -1146,40 +1146,6 @@ class RemoteCmd(cmd.Cmd):
     def reset_hooks(self) -> None:
         self.hooks_loaded = False
 
-    def set_prompt(self) -> None:
-        "Set the prompt using the prompt_fmt string."
-        pwd: str; alloc: int; free: int
-        pwd, alloc, free = self.eval_exec('_helper.pr()')
-        alloc, free = int(alloc), int(free)
-        free_pc = round(100 * free / (alloc + free))
-
-        # Update some dynamic info for the prompt
-        self.board['pwd']       = pwd
-        self.board['free']      = free
-        self.board['free_pc']   = free_pc
-
-        prompt_colours = {
-            'free':     ('green' if free_pc > 50 else
-                         'yellow' if free_pc > 25 else
-                         'red'),
-            'free_pc':  ('green' if free_pc > 50 else
-                         'yellow' if free_pc > 25 else
-                         'red'),
-        }
-        prompt_map = {
-            k: self.colour(prompt_colours.get(k, ''), v)
-            for k, v in self.board.items()}
-
-        self.prompt = (
-            # Make GNU readline calculate the length of the colour prompt
-            # correctly. See readline.rl_expand_prompt() docs.
-            re.sub(
-                '(\x1b\\[[0-9;]+m)', '\x01\\1\x02',
-                # Make colour reset act like a colour stack
-                self.colour.colour_stack(
-                    # Build the prompt from prompt_fmt (set with %set cmd)
-                    self.prompt_fmt.format_map(prompt_map))))
-
     ## Command line parsing, splitting and globbing
     def glob_remote(self, path: str) -> Generator[str, None, None]:
         'Expand glob patterns in the filename part of "path".'
@@ -1319,6 +1285,40 @@ class RemoteCmd(cmd.Cmd):
 
         self.write('Unknown command: "{}"\r\n'.format(line.strip()).encode())
         return True
+
+    def set_prompt(self) -> None:
+        "Set the prompt using the prompt_fmt string."
+        pwd: str; alloc: int; free: int
+        pwd, alloc, free = self.eval_exec('_helper.pr()')
+        alloc, free = int(alloc), int(free)
+        free_pc = round(100 * free / (alloc + free))
+
+        # Update some dynamic info for the prompt
+        self.board['pwd']       = pwd
+        self.board['free']      = free
+        self.board['free_pc']   = free_pc
+
+        prompt_colours = {
+            'free':     ('green' if free_pc > 50 else
+                         'yellow' if free_pc > 25 else
+                         'red'),
+            'free_pc':  ('green' if free_pc > 50 else
+                         'yellow' if free_pc > 25 else
+                         'red'),
+        }
+        prompt_map = {
+            k: self.colour(prompt_colours.get(k, ''), v)
+            for k, v in self.board.items()}
+
+        self.prompt = (
+            # Make GNU readline calculate the length of the colour prompt
+            # correctly. See readline.rl_expand_prompt() docs.
+            re.sub(
+                '(\x1b\\[[0-9;]+m)', '\x01\\1\x02',
+                # Make colour reset act like a colour stack
+                self.colour.colour_stack(
+                    # Build the prompt from prompt_fmt (set with %set cmd)
+                    self.prompt_fmt.format_map(prompt_map))))
 
 
 if __name__ == "__main__":
