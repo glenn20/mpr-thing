@@ -842,9 +842,41 @@ class RemoteCmd(cmd.Cmd):
     def do_get(self, args: List[str]) -> None:  # TODO: implement get -r
         """Copy a file from the board to a local folder:\n
             %get file1 [file2 ...]"""
+        opts = ''
+        if args and args[0][0] == "-":
+            opts, *args = args
         for arg in args:
-            with catcher(self.write):
-                self.pyb.fs_get(arg, os.path.basename(arg))
+            if 'r' in opts:
+                filelist = self.eval_exec(
+                    '_helper.ls(["{}"], {}, {})'.format(arg, False, 10))
+                print(filelist)
+                for f in filelist:
+                    if isinstance(f, str):
+                        # f is a file
+                        with catcher(self.write):
+                            print(os.path.basename(f), '<-', f)
+                            self.pyb.fs_get(f, os.path.basename(f))
+                    elif isinstance(f, tuple) and len(f) == 2:
+                        # f is a directory
+                        dir, files = f
+                        dest = os.path.join(
+                            os.path.basename(arg),
+                            os.path.relpath(dir, arg))
+                        try:
+                            if not os.path.isdir(dest): os.mkdir(dest)
+                        except OSError:
+                            print('%get: not a directory:', dest)
+                            continue
+                        for source in files:
+                            f1 = os.path.join(dir, source)
+                            f2 = os.path.join(dest, source)
+                            with catcher(self.write):
+                                print(f2, '<-', f1)
+                                self.pyb.fs_get(f1, f2)
+            else:
+                with catcher(self.write):
+                    print(os.path.basename(arg), '<-', arg)
+                    self.pyb.fs_get(arg, os.path.basename(arg))
 
     def do_put(self, args: List[str]) -> None:
         """Copy local files to the current folder on the board:
@@ -855,6 +887,7 @@ class RemoteCmd(cmd.Cmd):
         for arg in args:
             if not os.path.isdir(arg):
                 with catcher(self.write):
+                    print(arg, '->', os.path.basename(arg))
                     self.pyb.fs_put(arg, os.path.basename(arg))
             elif 'r' in opts:
                 parent = os.path.dirname(arg)
@@ -1156,7 +1189,7 @@ class RemoteCmd(cmd.Cmd):
         files = []
         with catcher(self.write):
             files = self.eval_exec('_helper.f_m("{}")'.format(dir))
-        return (                        # Just return the generator
+        return (                    # Just return the generator
             f for f in files
             if f[0] != '.' and fnmatch.fnmatch(f, pattern))
 
