@@ -111,7 +111,8 @@ class catcher:
             catcher.exception = value
             pass
         elif exc_type in (OSError, FileNotFoundError):
-            self.write_fn("{}: {}".format(exc_type.__name__, value).encode())
+            self.write_fn("{}: {}\r\n".format(
+                exc_type.__name__, value).encode())
         elif value is not None:
             catcher.exception = value
             self.write_fn(b"Error:: ")
@@ -335,15 +336,14 @@ class AnsiColour:
             self.spec['*.py'] = '01;36'
         self.dir_colour = self.spec.get('di', '')
         # Dict of ansi colour specs by name
-        colours = {  # ie: {'black': '00;30', ... 'white': '00;37'}
+        self.colour = {  # ie: {'black': '00;30', ... 'white': '00;37'}
             name: '00;3{}'.format(i)
             for i, name in enumerate((
                 'black', 'red', 'green', 'yellow',
                 'blue', 'magenta', 'cyan', 'white'))}
-        self.colour = colours.copy()
-        self.colour.update(     # Add the bright/bold colour variants
+        self.colour.update(dict(   # Add the bright/bold colour variants
             ('bold-' + x, '01' + spec[2:])
-            for x, spec in colours.items())
+            for x, spec in self.colour.items()))
         self.colour['reset'] = '0'
         self.colour['bold'] = '01'
 
@@ -521,13 +521,13 @@ class _MagicHelper:
 
     def mv(self, files):
         try:
-            s = uos.stat(files[-1])
+            dir_dest = uos.stat(files[-1])[0] & 0x4000
         except OSError:
-            s = [0]
-        if len(files) == 2 and not s[0] & 0x4000:
+            dir_dest = False
+        if len(files) == 2 and not dir_dest:
             uos.rename(files[0], files[1])
             return
-        elif not s[0] & 0x4000:
+        elif not dir_dest:
             print("Destination must be a directory.")
             return
         for f in files[:-1]:
@@ -568,20 +568,19 @@ class _MagicHelper:
 
     def f_m(self, match):  # file_matches for filename completion
         sep = match.rfind('/')
-        d, match = match[:sep+1], match[sep+1:]
+        d, match = match[:sep+1] or '.', match[sep+1:]
         try:
             matches = [
                 (d if d != '.' else '') + f[0] +
                 ('/' if f[1] & 0x4000 else '')  # Add / to directories
-                for f in uos.ilistdir(d or '.') if f[0].startswith(match)
-            ]
+                for f in uos.ilistdir(d) if f[0].startswith(match)]
         except OSError:
             matches = '[]'
         print(matches)
 
     import gc
 
-    def pr(self):
+    def pr(self):   # Return some dynamic values for the command prompt
         print(
             '("',uos.getcwd(),'",',gc.mem_alloc(),',',gc.mem_free(),')',
             sep='')
@@ -692,7 +691,7 @@ _helper = _MagicHelper()
 
 
 class RemoteCmd(cmd.Cmd):
-    base_prompt: str = '\r>>> %'
+    base_prompt: str = '\r>>> '
     doc_header: str = (
         'Execute "%magic" commands at the micropython prompt, eg: %ls /\n'
         'Use "%%" to enter multiple command mode.')
@@ -711,10 +710,9 @@ class RemoteCmd(cmd.Cmd):
         self.options_loaded     = False
         self.single_cmd_mode    = True
         self.colour             = ansi_colour
-        self.alias              = {}
-        self.alias['ll']        = 'ls -l'
-        self.board              = {}
-        self.board['device']    = self.pyb.device_name
+        self.prompt_colour      = 'yellow'
+        self.alias              = {'ll': 'ls -l'}
+        self.board              = {'device': self.pyb.device_name}
         # The shortname/alias for the device, eg: '/dev/ttyUSB0' -> 'u0'
         match = re.match(r'^/dev/tty(.).*(.)$', self.board['device'].lower())
         self.board['dev'] = ''.join(match.groups()) if match else '??'
@@ -739,6 +737,7 @@ class RemoteCmd(cmd.Cmd):
         fname = self.complete_local_filename
         self.complete_put       = fname
         self.complete_run       = fname
+        self.complete_shell     = fname
         fname = self.complete_local_directory
         self.complete_mount     = fname
         self.complete_lcd       = fname
@@ -747,6 +746,8 @@ class RemoteCmd(cmd.Cmd):
         with catcher(self.write):
             with open(os.path.expanduser(OPTIONS_FILE), 'r') as f:
                 lines = list(f)
+            # Load and close file before processing as cmds may force
+            # re-write of file (eg. ~/.mpr-thing.options)
             for line in lines:
                 self.onecmd(line)
 
@@ -818,7 +819,8 @@ class RemoteCmd(cmd.Cmd):
         """Rename/move a file or directory on the board:
             %mv old new
             %mv *.py /app"""
-        self.write_exec('_helper.mv({})'.format(args))
+        self.write_exec('_helper.mv({})'.format(
+            [f.rstrip('/') if f != '/' else f for f in args]))
 
     def do_cp(self, args: List[str]) -> None:
         """Make a copy of a file or directory on the board, eg:
@@ -839,57 +841,51 @@ class RemoteCmd(cmd.Cmd):
         self.write_exec(
             '_helper.rm({}, {})'.format(args, 10 if 'r' in opts else 0))
 
-    def do_get(self, args: List[str]) -> None:  # TODO: implement get -r
+    def do_get(self, args: List[str]) -> None:
         """Copy a file from the board to a local folder:\n
             %get file1 [file2 ...]"""
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
         for arg in args:
-            if 'r' in opts:
-                filelist = self.eval_exec(
-                    '_helper.ls(["{}"], {}, {})'.format(arg, False, 10))
-                print(filelist)
-                for f in filelist:
-                    if isinstance(f, str):
-                        # f is a file
+            filelist = self.eval_exec(
+                '_helper.ls(["{}"], {}, {})'.format(arg, False, 10))
+            print(filelist)
+            for f in filelist:
+                if isinstance(f, str):
+                    # f is a file
+                    with catcher(self.write):
+                        print(os.path.basename(f), '<-', f)
+                        self.pyb.fs_get(f, os.path.basename(f))
+                elif isinstance(f, tuple) and len(f) == 2:
+                    # f is a directory
+                    base = os.path.dirname(arg.rstrip('/'))
+                    base += '/' if base else ''
+                    dir: str = f[0]; files: List[str] = f[1]
+                    dest = dir[len(base):] if dir.startswith(base) else dir
+                    dest = dest.lstrip('./')  # Strip leading slashes and ..
+                    print(base, dir, dest)
+                    try:
+                        if dest and not os.path.isdir(dest):
+                            os.mkdir(dest)
+                            print(dest, '<-', dir)
+                    except OSError:
+                        print('%get: not a directory:', dest)
+                        continue
+                    for source in (f for f in files if f[-1] != '/'):
+                        # Copy the regular files - ignore directories
+                        f1 = os.path.join(dir, source)
+                        f2 = os.path.join(dest, source)
                         with catcher(self.write):
-                            print(os.path.basename(f), '<-', f)
-                            self.pyb.fs_get(f, os.path.basename(f))
-                    elif isinstance(f, tuple) and len(f) == 2:
-                        # f is a directory
-                        dir, files = f
-                        dest = os.path.join(
-                            os.path.basename(arg),
-                            os.path.relpath(dir, arg))
-                        try:
-                            if not os.path.isdir(dest): os.mkdir(dest)
-                        except OSError:
-                            print('%get: not a directory:', dest)
-                            continue
-                        for source in files:
-                            f1 = os.path.join(dir, source)
-                            f2 = os.path.join(dest, source)
-                            with catcher(self.write):
-                                print(f2, '<-', f1)
-                                self.pyb.fs_get(f1, f2)
-            else:
-                with catcher(self.write):
-                    print(os.path.basename(arg), '<-', arg)
-                    self.pyb.fs_get(arg, os.path.basename(arg))
+                            print(f2, '<-', f1)
+                            self.pyb.fs_get(f1, f2)
 
     def do_put(self, args: List[str]) -> None:
         """Copy local files to the current folder on the board:
             %put file [file2 ...]"""
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
         for arg in args:
             if not os.path.isdir(arg):
                 with catcher(self.write):
                     print(arg, '->', os.path.basename(arg))
                     self.pyb.fs_put(arg, os.path.basename(arg))
-            elif 'r' in opts:
+            else:
                 parent = os.path.dirname(arg)
                 for path, _, files in os.walk(arg):
                     dir = os.path.relpath(path, parent)
@@ -926,6 +922,7 @@ class RemoteCmd(cmd.Cmd):
         for arg in args:
             with catcher(self.write):
                 os.chdir(arg)
+                print(os.getcwd())
 
     def do_mkdir(self, args: List[str]) -> None:
         """Create a new directory on the board:
@@ -1024,11 +1021,7 @@ class RemoteCmd(cmd.Cmd):
         # Must chdir before umount or bad things happen.
         self.write_exec(
             'import uos;uos.getcwd()[:7]=="/remote" and uos.chdir("/")')
-        self.write_exec('uos.umount("/remote")')
-        # Unhook the SerialIntercept
-        if isinstance(self.pyb, SerialIntercept):
-            self.pyb.serial = self.pyb.orig_serial
-        self.pyb.mounted = False
+        self.pyb.umount_local()
         self.write_exec('print(uos.getcwd())')
 
     def do_free(self, args: List[str]) -> None:
@@ -1097,8 +1090,8 @@ class RemoteCmd(cmd.Cmd):
 
     def do_set(self, args: List[str]) -> None:
         """Set some options, eg:
-            %set prompt='{cyan}{platform}@{dev}-{id}-({free}) {blue}{pwd}> '
-            %set colour=pwd=blue
+            %set cmdprompt='{cyan}{platform}@{dev}-{id}-({free}) {blue}{pwd}> '
+            %set promptcolour=yellow
         """
         for arg in args:
             try:
@@ -1113,16 +1106,26 @@ class RemoteCmd(cmd.Cmd):
                 with catcher(self.write):
                     self.prompt_fmt = value
                     backup = self.prompt
-                    self.set_prompt()
+                    self.set_prompt()   # Check for errors in the prompt
                     self.prompt = backup
-                if catcher.exception:   # Restore the old prompt
+                if catcher.exception:   # Restore the old prompt_fmt
                     self.prompt_fmt = saved
+            elif key == 'promptcolour':
+                ansi = self.colour.ansi(value)
+                if ansi[0] == '\x1b':
+                    self.prompt_colour = value
             else:
                 print("%set: unknown key:", key)
         # Save the options in a startup file
         with open(os.path.expanduser(OPTIONS_FILE), 'w') as f:
             f.write('# Do not edit: will be overwritten by mpr-thing.\n')
             f.write('set prompt="{}"\n'.format(self.prompt_fmt))
+            f.write('set promptcolour="{}"\n'.format(self.prompt_colour))
+
+    def do_help(self, args: List[str]) -> None:  # type: ignore
+        'List available commands with "help" or detailed help with "help cmd".'
+        # Need to override Cmd.do_help since we abuse the args parameter
+        super().do_help(' '.join(args))
 
     ## File and directory completion functions
     def complete_filename(
@@ -1159,7 +1162,7 @@ class RemoteCmd(cmd.Cmd):
             self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
         'Return a list of local directories starting with "match".'
         return [
-            f for f in self.complete_filename(word, line, begidx, endidx)
+            f for f in self.complete_local_filename(word, line, begidx, endidx)
             if f.endswith('/')]
 
     def reload_hooks(self) -> None:
@@ -1224,7 +1227,8 @@ class RemoteCmd(cmd.Cmd):
 
     ## Cmd control functions
     def preloop(self) -> None:
-        self.prompt = self.colour.ansi('yellow') + self.base_prompt
+        self.prompt = \
+            self.colour.ansi(self.prompt_colour) + self.base_prompt + '%'
         if not self.hooks_loaded:
             self.reload_hooks()     # Load the helper code onto the board
         if not self.options_loaded:
@@ -1233,7 +1237,7 @@ class RemoteCmd(cmd.Cmd):
         self.single_cmd_mode = True
 
     def postloop(self) -> None:
-        print(self.colour.ansi('reset') + self.base_prompt[:-1], end='')
+        print(self.colour.ansi('reset') + self.base_prompt, end='')
 
     def precmd(self, line: str) -> str:
         if isinstance(line, list):
