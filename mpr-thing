@@ -1114,6 +1114,8 @@ class RemoteCmd(cmd.Cmd):
                 ansi = self.colour.ansi(value)
                 if ansi[0] == '\x1b':
                     self.prompt_colour = value
+                else:
+                    print("%set: invalid colour:", self.prompt_colour)
             else:
                 print("%set: unknown key:", key)
         # Save the options in a startup file
@@ -1227,17 +1229,17 @@ class RemoteCmd(cmd.Cmd):
 
     ## Cmd control functions
     def preloop(self) -> None:
-        self.prompt = \
-            self.colour.ansi(self.prompt_colour) + self.base_prompt + '%'
         if not self.hooks_loaded:
             self.reload_hooks()     # Load the helper code onto the board
         if not self.options_loaded:
             self.load_rc_file(OPTIONS_FILE)
             self.options_loaded = True
         self.single_cmd_mode = True
+        self.prompt = \
+            self.colour(self.prompt_colour, self.base_prompt) + '%'
 
     def postloop(self) -> None:
-        print(self.colour.ansi('reset') + self.base_prompt, end='')
+        print(self.base_prompt, end='')
 
     def precmd(self, line: str) -> str:
         if isinstance(line, list):

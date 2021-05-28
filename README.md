@@ -18,7 +18,7 @@ This tool uses Damien's mpremote tool and adds:
   command` escapes: eg.
   - `!ls *.py`
   - `!bash`: escape to an interactive bash shell ("exit" or crtl-D to return)
-  - `!cd dir`: change working directory on the local host (use os.chdir())
+  - `!cd dir`: change working directory on the local host (uses `os.chdir()`)
 - Execute shell-like command sequences on the board from the micropython
   prompt using `%magic` sequences, including filename and directory
   completion. These include the `mpremote` command list and some others
@@ -29,7 +29,7 @@ This tool uses Damien's mpremote tool and adds:
     color-ls settings).
   - `%cat boot.py`, `%edit main.py`, `%mv f1.py f2.py`,
     `%cp -r /lib /lib2`, `%rm -r /lib2`,
-  - `%put file.py`, `%get main.py`,
+  - `%put app/ lib/ file.py`, `%get /app/ /lib/ main.py`,
   - `%edit /main.py`: copy file from board, edit (using ${EDITOR:-/bin/vi})
     and copy back.
   - `%cd /lib`, `%pwd`, `%mkdir /app`, `%rmdir /app`
@@ -55,12 +55,14 @@ This tool uses Damien's mpremote tool and adds:
   - `%%`: Enters multiple-magic command mode with configurable colour
     prompt
     - `%set prompt="{cyan}{platform}@{dev}-{id}-({free}){blue}{pwd}> "`:
-    Set the prompt for multi-command mode as you like, eg:
+      Set the prompt for multi-command mode as you like, eg:
       - `"{cyan}{dev}:{platform}({free}){yellow}{pwd} % "` ->
        `u0:esp32(100880)/lib % `
       - Can select from `{dev}`, `{platform}`, `{unique_id}`, `{id}`,
         `{nodename}`, `{free}`, `{free_pc}` (mem_free in %), `{release}`,
         `{version}`, ...
+    - `%set promptcolour=bold-green`:
+      Change the colour of the prompt for `%magic` commands
 
 This tool requires that Damien's mpremote tool is installed:
 ```pip install mpremote```
