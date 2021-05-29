@@ -331,9 +331,8 @@ class AnsiColour:
         self.spec = {
             k.lstrip('*'): v for k, v in
             (c.split('=') for c in spec.split(':'))} if spec else {}
-        if '*.py' not in self.spec:     # A fallback colour for *.py files
-            self.spec['*.py'] = '01;36'
-        self.dir_colour = self.spec.get('di', '')
+        if '.py' not in self.spec:     # A fallback colour for *.py files
+            self.spec['.py'] = '01;36'
         # Dict of ansi colour specs by name
         self.colour = {  # ie: {'black': '00;30', ... 'white': '00;37'}
             name: '00;3{}'.format(i)
@@ -384,7 +383,7 @@ class AnsiColour:
     def pick(self, file: str, bold: Optional[bool] = None) -> str:
         """Pick a colour for "file" according to the "ls" command."""
         spec = (
-            self.dir_colour if file[-1] == '/' else
+            self.spec.get('di', '') if file[-1] == '/' else
             self.spec.get(os.path.splitext(file)[1], ''))
         return self.bold(spec, bold)
 
@@ -396,7 +395,7 @@ class AnsiColour:
     # Return a colour decorated directory
     def dir(self, file: str, reset: str = '0') -> str:
         """Return "dir" colourised according to the colour "ls" command."""
-        return self.colourise(self.dir_colour, file, reset=reset)
+        return self.colourise(self.spec.get('di', ''), file, reset=reset)
 
     def colour_stack(self, text: str) -> str:
         """Change the way colour reset sequence ("\x1b[0m") works.
@@ -416,9 +415,6 @@ class AnsiColour:
 
         return (re.sub('(\x1b\\[)([0-9;]+)(m)', ansistack, text) +
                 (self.ansi('reset') if stack else ''))  # Force reset at end
-
-
-ansi_colour = AnsiColour()
 
 
 # A collection of helper functions for file listings and filename completion
@@ -606,7 +602,6 @@ _helper = _MagicHelper()
         return code
 
     def __init__(self) -> None:
-        self.colour = ansi_colour
         MagicHelper.cmd_hook_code = (
             MagicHelper.do_hook_subs(
                 MagicHelper.hook_subs, MagicHelper.cmd_hook_code))
@@ -617,7 +612,7 @@ _helper = _MagicHelper()
     LsFileList   = Union[LsShortStyle, LsLongStyle]
 
     # Methods to process data returned from the helper functions
-    def ls_files(self, file_list: LsFileList) -> None:
+    def ls_files(self, file_list: LsFileList, colour: AnsiColour) -> None:
         '''Print a file listing (long or short style) from data returned
         from the board.'''
         # Pretty printing for files on the board
@@ -631,7 +626,7 @@ _helper = _MagicHelper()
             if len(files) < 20 and sum(len(f) + 2 for f in files) < columns:
                 # Print all on one line
                 for f in files:
-                    print(self.colour.file(f), end='  ')
+                    print(colour.file(f), end='  ')
                 print('')
             else:
                 # Print in columns - by row
@@ -641,7 +636,7 @@ _helper = _MagicHelper()
                 n = 1
                 for f in files:
                     print(
-                        self.colour.file(f), spaces[len(f):], sep='',
+                        colour.file(f), spaces[len(f):], sep='',
                         end=('' if n % cols and n < len(files) else '\n'))
                     n += 1
         else:
@@ -653,10 +648,10 @@ _helper = _MagicHelper()
                 print('{:9d} {} {}'.format(
                     size,
                     time.strftime('%a %x %X', time.localtime(mtime))[:-3],
-                    self.colour.file(f)))
+                    colour.file(f)))
 
     # File listing: response is received from _helper.ls() on the board
-    def ls(self, response: bytes) -> None:
+    def ls(self, response: bytes, colour: AnsiColour) -> None:
         'Print a nice file listing from the data sent back from the board.'
         if not response:
             return
@@ -670,7 +665,7 @@ _helper = _MagicHelper()
         files = [
             f for f in file_list
             if isinstance(f, str) or (isinstance(f, tuple) and len(f) == 3)]
-        self.ls_files(cast(MagicHelper.LsFileList, files))
+        self.ls_files(cast(MagicHelper.LsFileList, files), colour)
 
         # Print the listings of args which are directories
         # Each dir is a tuple with len == 2: (dirname, [file1, file2, ..])
@@ -686,7 +681,7 @@ _helper = _MagicHelper()
             if len(dirs) > 1:
                 print('{}:'.format(dir.rstrip('/') or '/'))
             if files:
-                self.ls_files(cast(MagicHelper.LsFileList, files))
+                self.ls_files(cast(MagicHelper.LsFileList, files), colour)
 
 
 class RemoteCmd(cmd.Cmd):
@@ -703,6 +698,7 @@ class RemoteCmd(cmd.Cmd):
 
     def __init__(self, pyb: PyboardExtended, console_out_write: Writer):
         self.pyb                = pyb
+        self.colour             = AnsiColour()
         self._helper            = MagicHelper()
         self.write_fn           = console_out_write
         self.prompt             = self.base_prompt
@@ -712,11 +708,11 @@ class RemoteCmd(cmd.Cmd):
         self.options_loaded     = False
         self.rcfile_loaded      = False
         self.single_cmd_mode    = True
-        self.colour             = ansi_colour
         self.prompt_colour      = 'yellow'
         self.alias              = {'ll': 'ls -l'}
         self.board              = {'device': self.pyb.device_name}
         self.names: Dict[str, str] = {}
+        self.colour_spec_extra: Dict[str, str] = {}
         # The shortname/alias for the device, eg: '/dev/ttyUSB0' -> 'u0'
         match = re.match(r'^/dev/tty(.).*(.)$', self.board['device'].lower())
         self.board['dev'] = ''.join(match.groups()) if match else '??'
@@ -787,7 +783,9 @@ class RemoteCmd(cmd.Cmd):
     def do_ls(self, args: List[str]) -> None:
         """
         List files on the board:
-            %ls [-[lR]] [file_or_dir1 ...]"""
+            %ls [-[lR]] [file_or_dir1 ...]
+        The file listing will be colourised the same as "ls --color". Use the
+        "set" command to add or change the file listing colours."""
         opts = ''
         if args and args[0][0] == "-":
             opts, *args = args
@@ -795,7 +793,8 @@ class RemoteCmd(cmd.Cmd):
             '_helper.ls({}, {}, {})'.format(
                 args,                        # Dirs and files to list
                 "l" in opts,                 # Use a long-style listing
-                10 if "R" in opts else 0)))  # Max recursion = 10
+                10 if "R" in opts else 0)),  # Max recursion = 10
+            self.colour)
 
     def do_cat(self, args: List[str]) -> None:
         """
@@ -900,29 +899,42 @@ class RemoteCmd(cmd.Cmd):
     def do_put(self, args: List[str]) -> None:
         """
         Copy local files to the current folder on the board:
-            %put file [file2 ...]"""
+            %put file [file2 ...] [:dest]
+        If the last argument start with ":" use that as the destination folder.
+        """
+        opts = ''
+        if args and args[0][0] == "-":
+            opts, *args = args
         pwd: str = self.board['pwd']
         if pwd.startswith('/remote'):
             print("%put: do not use on mounted folder:", pwd)
             return
+        dest_dir = ''
+        if args and args[-1].startswith(':'):
+            dest_dir = args[-1][1:].rstrip('/') + '/'
+            args = args[:-1]
         for arg in args:
             if not os.path.isdir(arg):
                 with catcher(self.write):
-                    print(arg, '->', os.path.basename(arg))
-                    self.pyb.fs_put(arg, os.path.basename(arg))
+                    f1, f2 = arg, dest_dir + os.path.basename(arg)
+                    print(f2)
+                    if 'n' not in opts:
+                        self.pyb.fs_put(f1, f2)
             else:
                 parent = os.path.dirname(arg)
                 for path, _, files in os.walk(arg):
-                    dir = os.path.relpath(path, parent)
-                    if not self.eval_exec('_helper.mkdir("{}")'.format(dir)):
+                    dir = dest_dir + os.path.relpath(path, parent)
+                    print(dir)
+                    if ('n' not in opts and not
+                            self.eval_exec('_helper.mkdir("{}")'.format(dir))):
                         print('%put: not a directory:', dir)
                         continue
-                    print(dir)
                     for f in files:
-                        f1, f2 = os.path.join(path, f), os.path.join(dir, f)
+                        f1, f2 = path + '/' + f, dir + '/' + f
                         with catcher(self.write):
                             print(f2)
-                            self.pyb.fs_put(f1, f2)
+                            if 'n' not in opts:
+                                self.pyb.fs_put(f1, f2)
 
     ## Directory commands
     def do_cd(self, args: List[str]) -> None:
@@ -1148,6 +1160,8 @@ class RemoteCmd(cmd.Cmd):
             %set name=node05
         Update the mapping of all device unique_ids and names (as json string):
             %set names='{"ab:cd:ef:01:23:45": "node01", ...}'
+        Add extra colour specs (as json) for file listing with "ls":
+            %set lscolour='{"di": "bold-blue", "*.py": "bold-cyan"}'
         """
         for arg in args:
             try:
@@ -1179,6 +1193,16 @@ class RemoteCmd(cmd.Cmd):
                     print('%set:', err)
             elif key == 'name':
                 self.names[self.board['unique_id']] = value
+            elif key == 'lscolour':
+                d: Dict[str, str] = {}
+                d.update(json.loads(value))
+                for k, v in d.items():
+                    colour = self.colour.ansi(v)
+                    if colour[0] != '\x1b':
+                        print('%set: unknown colour:', v)
+                        continue
+                    self.colour_spec_extra[k.lstrip('*')] = v
+                self.colour.spec.update(self.colour_spec_extra)
             else:
                 print("%set: unknown key:", key)
         # Save the options in a startup file
@@ -1186,13 +1210,13 @@ class RemoteCmd(cmd.Cmd):
             return
         with open(OPTIONS_FILE if os.path.isfile(OPTIONS_FILE) else
                   os.path.expanduser('~/' + OPTIONS_FILE), 'w') as f:
-            f.write((
-                '# Edit with caution: will be overwritten by mpr-thing.\n'
-                'set prompt="{}"\n'
-                'set promptcolour="{}"\n'
-                'set names=\'{}\'\n')
-                .format(self.prompt_fmt, self.prompt_colour,
-                        json.dumps(self.names)))
+            f.write(
+                '# Edit with caution: will be overwritten by mpr-thing.\n')
+            f.write('set prompt="{}"\n'.format(self.prompt_fmt))
+            f.write('set promptcolour="{}"\n'.format(self.prompt_colour))
+            f.write('set names=\'{}\'\n'.format(json.dumps(self.names)))
+            f.write('set lscolour=\'{}\'\n'.format(
+                json.dumps(self.colour_spec_extra)))
 
     def help_set(self) -> None:
         if self.do_set.__doc__:
@@ -1326,7 +1350,9 @@ class RemoteCmd(cmd.Cmd):
     def split(self, line: str) -> List[str]:
         'Split the command line into tokens and expand any glob patterns.'
         # punctuation_chars=True ensures semicolons can split commands
-        allargs = list(shlex.shlex(line, None, True, True))
+        lex = shlex.shlex(line, None, True, True)
+        lex.wordchars += ':'
+        allargs = list(lex)
 
         # Semicolons separate commands: make a list of args for each sub-cmd
         # [[arg1, ...], [arg1,...], ...]
