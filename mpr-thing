@@ -26,7 +26,7 @@
 
 import os, select, re, sys, readline
 
-from mpremote.pyboard import PyboardError
+from mpremote.pyboard import PyboardError, stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended, SerialIntercept
 try:
     from mpremote.console import ConsolePosix, ConsoleWindows
@@ -109,7 +109,6 @@ class catcher:
                 self.write_fn(value.args[0].encode())
         elif exc_type == KeyboardInterrupt:
             catcher.exception = value
-            pass
         elif exc_type in (OSError, FileNotFoundError):
             self.write_fn("{}: {}\r\n".format(
                 exc_type.__name__, value).encode())
@@ -770,9 +769,7 @@ class RemoteCmd(cmd.Cmd):
         return eval(self.exec(code))
 
     def write_exec(self, code: str) -> None:
-        def writer(chars: bytes) -> None:
-            self.write(chars)
-        self.exec(code, writer)
+        self.exec(code, stdout_write_bytes)
 
     ## File commands
     def do_ls(self, args: List[str]) -> None:
@@ -845,9 +842,13 @@ class RemoteCmd(cmd.Cmd):
         """Copy a file from the board to a local folder:\n
             %get file1 [file2 ...]"""
         for arg in args:
+            pwd: str = self.board['pwd']
+            if (arg.startswith('/remote') or
+                    (pwd.startswith('/remote') and not arg.startswith('/'))):
+                print("%get: skipping remote mounted folder:", arg)
+                continue
             filelist = self.eval_exec(
                 '_helper.ls(["{}"], {}, {})'.format(arg, False, 10))
-            print(filelist)
             for f in filelist:
                 if isinstance(f, str):
                     # f is a file
@@ -861,11 +862,10 @@ class RemoteCmd(cmd.Cmd):
                     dir: str = f[0]; files: List[str] = f[1]
                     dest = dir[len(base):] if dir.startswith(base) else dir
                     dest = dest.lstrip('./')  # Strip leading slashes and ..
-                    print(base, dir, dest)
                     try:
                         if dest and not os.path.isdir(dest):
                             os.mkdir(dest)
-                            print(dest, '<-', dir)
+                            print(dest)
                     except OSError:
                         print('%get: not a directory:', dest)
                         continue
@@ -874,12 +874,16 @@ class RemoteCmd(cmd.Cmd):
                         f1 = os.path.join(dir, source)
                         f2 = os.path.join(dest, source)
                         with catcher(self.write):
-                            print(f2, '<-', f1)
+                            print(f2)
                             self.pyb.fs_get(f1, f2)
 
     def do_put(self, args: List[str]) -> None:
         """Copy local files to the current folder on the board:
             %put file [file2 ...]"""
+        pwd: str = self.board['pwd']
+        if pwd.startswith('/remote'):
+            print("%put: do not use on mounted folder:", pwd)
+            return
         for arg in args:
             if not os.path.isdir(arg):
                 with catcher(self.write):
@@ -892,10 +896,11 @@ class RemoteCmd(cmd.Cmd):
                     if not self.eval_exec('_helper.mkdir("{}")'.format(dir)):
                         print('%put: not a directory:', dir)
                         continue
+                    print(dir)
                     for f in files:
                         f1, f2 = os.path.join(path, f), os.path.join(dir, f)
                         with catcher(self.write):
-                            print(f1, '->', f2)
+                            print(f2)
                             self.pyb.fs_put(f1, f2)
 
     ## Directory commands
@@ -988,10 +993,18 @@ class RemoteCmd(cmd.Cmd):
         if args and args[0] == 'set':
             from time import gmtime, localtime
             t = gmtime() if 'utc' in args else localtime()
-            self.write_exec(
-                'from machine import RTC;RTC().init({})'.format(
-                    (t.tm_year, t.tm_mon, t.tm_mday, 0,
-                     t.tm_hour, t.tm_min, t.tm_sec, 0)))
+            rtc_cmds = {
+                'esp8266': 'from machine import RTC;RTC().datetime({})',
+                'pyb':     'from pyb import RTC;RTC().datetime({})',
+                'pycom':   'from machine import RTC;_t={};'
+                           'RTC().init((_t[i] for i in [0,1,2,4,5,6]))',
+            }
+            fmt = rtc_cmds.get(
+                self.board['sysname'],
+                'from machine import RTC;RTC().init({})')
+            self.write_exec(fmt.format(
+                (t.tm_year, t.tm_mon, t.tm_mday, 0,
+                    t.tm_hour, t.tm_min, t.tm_sec, 0)))
         from time import asctime
         t = self.eval_exec('import utime;print(utime.localtime())')
         self.write(asctime(
@@ -1223,7 +1236,6 @@ class RemoteCmd(cmd.Cmd):
         # If first arg was ';' use empty args, else use the first in argslist
         args = next(argslist) if allargs and allargs[0] != ';' else []
         # Push the rest of the args back onto the cmd queue
-        # TODO: Check what happens when args are re-parsed from cmdqueue
         self.cmdqueue.extend(list(argslist))  # type: ignore
         return args
 
@@ -1246,6 +1258,7 @@ class RemoteCmd(cmd.Cmd):
             return line
         if not self.single_cmd_mode and line and line[0] == "%":
             line = line[1:]     # Discard any leading '%' in multi-cmd mode
+            readline.replace_history_item(1, line)
 
         return line
 
@@ -1263,7 +1276,11 @@ class RemoteCmd(cmd.Cmd):
         else:
             # A command line read from the input
             cmd, arg, line = self.parseline(line)
-            args = list(self.split(arg)) if arg else []
+            try:
+                args = list(self.split(arg)) if arg else []
+            except ValueError as err:
+                print('%magic command error:', err)
+                return False
         if not line:
             return self.emptyline()
         if not cmd:
