@@ -1484,8 +1484,8 @@ class RemoteCmd(cmd.Cmd):
         self.board['free_pc']   = free_pc
         self.board['lcd']       = os.getcwd()
         self.board['lcd3']      = '/'.join(os.getcwd().rsplit('/', 3)[1:])
-        self.board['lcd2']      = '/'.join(os.getcwd().rsplit('/', 3)[1:])
-        self.board['lcd1']      = '/'.join(os.getcwd().rsplit('/', 3)[1:])
+        self.board['lcd2']      = '/'.join(os.getcwd().rsplit('/', 2)[1:])
+        self.board['lcd1']      = '/'.join(os.getcwd().rsplit('/', 1)[1:])
         self.board['name'] = self.names.get(    # Look up name for board
             self.board['unique_id'], self.board['id'])
 

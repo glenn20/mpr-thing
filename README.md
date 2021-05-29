@@ -10,26 +10,27 @@ A tool to extend Damien George's (@dpgeorge) excellent mpremote tool. I really
 like his clever solution to the micropython dev workflow.
 
 However, I do like to have access to some convenience commands at the python
-prompt when managing my boards - like the ipython %magic commands, but for
-managing files and stuff on the board.
+prompt when working with my boards - like the ipython `%magic` commands, but
+for managing files and stuff on the board.
 
-This tool uses Damien's mpremote tool and adds:
+This tool uses Damien's `mpremote` tool and adds:
+
 - Execute local shell commands from the micropython prompt using `!shell
   command` escapes: eg.
   - `!ls *.py`
   - `!bash`: escape to an interactive bash shell ("exit" or crtl-D to return)
   - `!cd dir`: change working directory on the local host (uses `os.chdir()`)
 - Execute shell-like command sequences on the board from the micropython
-  prompt using `%magic` sequences, including filename and directory
-  completion. These include the `mpremote` command list and some others
-  inspired by Dave Hyland's (@dhylands) **rshell**, including:
+  prompt using `%magic` sequences, including filename and directory completion
+  and file globbing. These include the `mpremote`/`pyboard` command list and
+  some others inspired by Dave Hyland's (@dhylands) **rshell**, including:
   - `%mount [dir]`, `%umount`: use Damien's virtual FS to mount local
     directory on board.
   - `%ls -lR /lib`: colourised listing of files on the board (uses your
     color-ls settings).
   - `%cat boot.py`, `%edit main.py`, `%mv f1.py f2.py`,
     `%cp -r /lib /lib2`, `%rm -r /lib2`,
-  - `%put app/ lib/ file.py`, `%get /app/ /lib/ main.py`,
+  - `%put app/ file.py`, `%put app/ :/lib`, `%get /app/ /lib/ main.py`,
   - `%edit /main.py`: copy file from board, edit (using ${EDITOR:-/bin/vi})
     and copy back.
   - `%cd /lib`, `%pwd`, `%mkdir /app`, `%rmdir /app`
@@ -54,7 +55,9 @@ This tool uses Damien's mpremote tool and adds:
     ESP32/8266).
   - `%%`: Enters multiple-magic command mode with configurable colour
     prompt
-    - `%set prompt="{cyan}{platform}@{dev}-{id}-({free}){blue}{pwd}> "`:
+  - `%set option=value`:
+    Set and save some options:
+    - `%set prompt="{cyan}{name}@{dev}-{sysname}-({free}){blue}{pwd}> "`:
       Set the prompt for multi-command mode as you like, eg:
       - `"{cyan}{dev}:{platform}({free}){yellow}{pwd} % "` ->
        `u0:esp32(100880)/lib % `
@@ -63,17 +66,23 @@ This tool uses Damien's mpremote tool and adds:
         `{version}`, ...
     - `%set promptcolour=bold-green`:
       Change the colour of the prompt for `%magic` commands
+    - `%set name=node05`:
+      Set and save the name of the current board (for use in prompt).
+    - `%set names='{"ab:cd:ef:01:23:45": "node01", ...}'`:
+      Update the mapping of all device unique_ids and names (as json string).
+    - `%set lscolour='{"di": "bold-blue", "*.py": "bold-cyan"}'`:
+      Add extra colour specs (as json) for `%ls` file listings.
 
 This tool requires that Damien's mpremote tool is installed:
 ```pip install mpremote```
 
 **Warning:** to make this work I override the `do_repl_main_loop` function in
-the `mpremote` module and use some ugly hackery with terminal handling: eg.
-micropython and the escapes have separate command histories.
+the `mpremote` module and use some hackery with terminal handling: eg.
+micropython and the `%magic` commands have separate command histories.
 
 ### Mea Culpa
 
 I know that there is no paucity of very cool terminal apps for talking to your
 micropython boards. I like the mpremote approach but just wanted to add some
-convenience commands and just found it easier to merge in some other stuff
-from some old cli tools I have. I really didn't mean to re-invent the wheel.
+convenience commands and found it easier to merge in some other stuff from
+some old cli tools I have. I really didn't mean to re-invent the wheel.
