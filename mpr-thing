@@ -781,6 +781,28 @@ class RemoteCmd(cmd.Cmd):
     def write_exec(self, code: str) -> None:
         self.exec(code, stdout_write_bytes)
 
+    ## Invoke mpremote commands
+    # Note: fs commands will sys.exit() on error - we cannnot use.
+    def mpremotecmd(self, args: List[str]) -> None:
+        with catcher(self.write):
+            main.mpremote_command(args, self.pyb, False)
+
+    def do_mount(self, args: List[str]) -> None:
+        args.insert(0, "mount")
+        self.mpremotecmd(args)
+
+    def do_exec(self, args: List[str]) -> None:
+        args.insert(0, "exec")
+        self.mpremotecmd(args)
+
+    def do_eval(self, args: List[str]) -> None:
+        args.insert(0, "eval")
+        self.mpremotecmd(args)
+
+    def do_run(self, args: List[str]) -> None:
+        args.insert(0, "run")
+        self.mpremotecmd(args)
+
     ## File commands
     def do_ls(self, args: List[str]) -> None:
         """
@@ -986,7 +1008,7 @@ class RemoteCmd(cmd.Cmd):
                 self.pyb.fs_rmdir(arg)
 
     ## Execute code on the board
-    def do_exec(self, args: List[str]) -> None:
+    def do_exec2(self, args: List[str]) -> None:
         """
         Exec the python code on the board, eg.:
             %exec print(34 * 35)
@@ -994,13 +1016,13 @@ class RemoteCmd(cmd.Cmd):
             %exec 'print("one")\\nprint("two")' """
         self.write_exec(' '.join(args).replace('\\n', '\n'))
 
-    def do_eval(self, args: List[str]) -> None:
+    def do_eval2(self, args: List[str]) -> None:
         """
         Eval and print the python code on the board, eg.:
             %eval 34 * 35"""
         self.write_exec('print({})'.format(' '.join(args)))
 
-    def do_run(self, args: List[str]) -> None:
+    def do_run2(self, args: List[str]) -> None:
         """
         Load and run local python files onto the board:
             %run file1.py [file2.py ...]"""
@@ -1060,7 +1082,7 @@ class RemoteCmd(cmd.Cmd):
             (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode('utf-8')
             + b'\r\n')
 
-    def do_mount(self, args: List[str]) -> None:
+    def do_mount2(self, args: List[str]) -> None:
         """
         Mount a local folder onto the board at "/remote" as a Virtual
         FileSystem:
@@ -1421,11 +1443,13 @@ class RemoteCmd(cmd.Cmd):
         if isinstance(line, list):
             # List of str is pushed back onto cmdqueue in self.split()
             cmd, *args = line
+            main.do_command_expansion(args)
         else:
             # A command line read from the input
             cmd, arg, line = self.parseline(line)
             try:
                 args = list(self.split(arg)) if arg else []
+                main.do_command_expansion(args)
             except ValueError as err:
                 print('%magic command error:', err)
                 return False
