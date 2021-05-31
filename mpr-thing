@@ -28,10 +28,7 @@ import os, select, re, sys, readline
 
 from mpremote.pyboard import PyboardError, stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended, SerialIntercept
-try:
-    from mpremote.console import ConsolePosix, ConsoleWindows
-except ImportError:
-    from mpremote.main import ConsolePosix, ConsoleWindows   # type: ignore
+from mpremote.console import ConsolePosix, ConsoleWindows
 
 from typing import (
     Any, Dict, Generator, Union, Callable, Optional, List, Tuple, cast)
@@ -134,10 +131,7 @@ class raw_repl(catcher):
 
     def __enter__(self) -> PyboardExtended:
         super().__enter__()
-        if self.soft_reset:
-            self.pyb.enter_raw_repl()
-        else:
-            self.pyb.enter_raw_repl_without_soft_reset()
+        self.pyb.enter_raw_repl(self.soft_reset)
         return self.pyb
 
     def __exit__(
@@ -154,6 +148,8 @@ def my_do_repl_main_loop(
         pyb:                PyboardExtended,
         console_in:         Union[ConsolePosix, ConsoleWindows],
         console_out_write:  Writer,
+        *,
+        code_to_inject:     bytes,
         file_to_inject:     str) -> None:
 
     'An overload function for the main repl loop in "mpremote".'
@@ -184,10 +180,12 @@ def my_do_repl_main_loop(
                 hard_reset(pyb)
                 beginning_of_line = True
                 remote.reset_hooks()
+            elif c == b"\x0a" and code_to_inject is not None:
+                pyb.serial.write(code_to_inject)    # ctrl-j, inject code
             elif c == b"\x0b":  # ctrl-k, inject script
                 console_out_write(
                     bytes("Injecting %s\r\n" % file_to_inject, "utf8"))
-                pyb.enter_raw_repl_without_soft_reset()
+                pyb.enter_raw_repl(soft_reset=False)
                 with open(file_to_inject, "rb") as f:
                     pyfile = f.read()
                 try:
@@ -218,7 +216,7 @@ def my_do_repl_main_loop(
                     remote.cmdloop()
                 console_in.enter()
                 beginning_of_line = True
-            elif c == b"\x0d":
+            elif c == b"\x0d":      # ctrl-m: carriage return
                 pyb.serial.write(c)
                 beginning_of_line = True
             else:
@@ -340,10 +338,13 @@ class AnsiColour:
                 'black', 'red', 'green', 'yellow',
                 'blue', 'magenta', 'cyan', 'white'))}
         self.colour.update(dict(   # Add the bright/bold colour variants
-            ('bold-' + x, '01' + spec[2:])
+            ('bold-' + x, '01;' + spec[3:])
             for x, spec in self.colour.items()))
-        self.colour['reset'] = '0'
-        self.colour['bold'] = '01'
+        self.colour['reset'] = '00'
+        self.colour['normal'] = '0'
+        self.colour['bold'] = '1'
+        self.colour['underline'] = '4'
+        self.colour['reverse'] = '7'
 
     def enable(self, enable: bool = True) -> None:
         """Enable or disable colourising of text with ansi escapes."""
@@ -354,7 +355,7 @@ class AnsiColour:
 
     def colourise(
             self, spec: str, word: str,
-            bold: Optional[bool] = None, reset: str = '0') -> str:
+            bold: Optional[bool] = None, reset: str = 'reset') -> str:
         """Return "word" colourised according to "spec", which may be a colour
         name (eg: 'green') or an ansi sequence (eg: '00;32')."""
         if not spec or not self._enable:
@@ -367,7 +368,7 @@ class AnsiColour:
 
     def __call__(
             self, spec: str, word: str,
-            bold: Optional[bool] = None, reset: str = '0') -> str:
+            bold: Optional[bool] = None, reset: str = 'reset') -> str:
         """Return "word" colourised according to "spec", which may be a colour
         name (eg: 'green') or an ansi sequence (eg: '00;32')."""
         return self.colourise(spec, word, bold, reset)
@@ -406,9 +407,14 @@ class AnsiColour:
         def ansistack(m: Any) -> Any:
             # Return the replacement text for the reset sequence
             colour: str = m.group(2)
-            if colour != '0':   # If this is not a colour reset sequence
+            if len(colour) == 5:   # If this is not a colour reset sequence
                 stack.append(colour)            # Save on the colour stack
-            else:               # If this is a colour reset sequence
+            elif colour == '1':   # Turn on bold
+                stack[-1] = '01;' + stack[-1][3:]
+            elif colour == '0':   # Turn off bold
+                stack[-1] = '00;' + stack[-1][3:]
+                colour = stack[-1]
+            elif colour == '00':   # If this is a colour reset sequence
                 if len(stack) > 0: stack.pop()  # Pop the stack first
                 colour = stack[-1]      # Replace with top colour on stack
             return '\x1b[' + colour + 'm'
@@ -710,13 +716,9 @@ class RemoteCmd(cmd.Cmd):
         self.single_cmd_mode    = True
         self.prompt_colour      = 'yellow'
         self.alias              = {'ll': 'ls -l'}
-        self.board              = {'device': self.pyb.device_name}
+        self.board: Dict[str, Any] = {}
         self.names: Dict[str, str] = {}
         self.colour_spec_extra: Dict[str, str] = {}
-        # The shortname/alias for the device, eg: '/dev/ttyUSB0' -> 'u0'
-        match = re.match(r'^/dev/tty(.).*(.)$', self.board['device'].lower())
-        self.board['dev'] = ''.join(match.groups()) if match else '??'
-        self.board.update({c: self.colour.ansi(c) for c in self.colour.colour})
         readline.set_completer_delims(' \t\n>;')
         super().__init__()
 
@@ -860,6 +862,7 @@ class RemoteCmd(cmd.Cmd):
         """
         Copy a file from the board to a local folder:\n
             %get file1 [file2 ...]"""
+        self.load_board_params()
         for arg in args:
             pwd: str = self.board['pwd']
             if (arg.startswith('/remote') or
@@ -872,7 +875,7 @@ class RemoteCmd(cmd.Cmd):
                 if isinstance(f, str):
                     # f is a file
                     with catcher(self.write):
-                        print(os.path.basename(f), '<-', f)
+                        print(os.path.basename(f))
                         self.pyb.fs_get(f, os.path.basename(f))
                 elif isinstance(f, tuple) and len(f) == 2:
                     # f is a directory
@@ -905,6 +908,7 @@ class RemoteCmd(cmd.Cmd):
         opts = ''
         if args and args[0][0] == "-":
             opts, *args = args
+        self.load_board_params()
         pwd: str = self.board['pwd']
         if pwd.startswith('/remote'):
             print("%put: do not use on mounted folder:", pwd)
@@ -1022,6 +1026,7 @@ class RemoteCmd(cmd.Cmd):
             %uname"""
         if args:
             print('uname: unexpected args:', args)
+        self.load_board_params()
         self.write((
             'Micropython {nodename} ({unique_id}) '
             '{version} {sysname} {machine}'
@@ -1042,6 +1047,7 @@ class RemoteCmd(cmd.Cmd):
                 'pycom':   'from machine import RTC;_t={};'
                            'RTC().init((_t[i] for i in [0,1,2,4,5,6]))',
             }
+            self.load_board_params()
             fmt = rtc_cmds.get(
                 self.board['sysname'],
                 'from machine import RTC;RTC().init({})')
@@ -1152,17 +1158,6 @@ class RemoteCmd(cmd.Cmd):
             self.alias[alias] = value.strip()
 
     def do_set(self, args: List[str]) -> None:
-        """
-        Set some options, eg:
-            %set prompt='{cyan}{name}@{dev}-{sysname}-({free}){blue}{pwd}> '
-            %set promptcolour=yellow
-        Set and save the name of the current board (for use in prompt):
-            %set name=node05
-        Update the mapping of all device unique_ids and names (as json string):
-            %set names='{"ab:cd:ef:01:23:45": "node01", ...}'
-        Add extra colour specs (as json) for file listing with "ls":
-            %set lscolour='{"di": "bold-blue", "*.py": "bold-cyan"}'
-        """
         for arg in args:
             try:
                 key, value = arg.split('=', maxsplit=1)
@@ -1192,6 +1187,7 @@ class RemoteCmd(cmd.Cmd):
                 except ValueError as err:
                     print('%set:', err)
             elif key == 'name':
+                self.load_board_params()
                 self.names[self.board['unique_id']] = value
             elif key == 'lscolour':
                 d: Dict[str, str] = {}
@@ -1220,13 +1216,25 @@ class RemoteCmd(cmd.Cmd):
 
     def help_set(self) -> None:
         if self.do_set.__doc__:
-            print(inspect.cleandoc(self.do_set.__doc__))
+            print(inspect.cleandoc("""
+        Set some options, eg:
+            %set prompt='{cyan}{name}@{dev}-{sysname}-({free}){blue}{pwd}> '
+            %set prompt='{cyan}{name}@{dev}({free}){green}{lcd1}:{blue}{pwd}> '
+            %set promptcolour=yellow
+        Set and save the name of the current board (for use in prompt):
+            %set name=node05
+        Update the mapping of all device unique_ids and names (as json string):
+            %set names='{"ab:cd:ef:01:23:45": "node01", ...}'
+        Add extra colour specs (as json) for file listing with "ls":
+            %set lscolour='{"di": "bold-blue", "*.py": "bold-cyan"}'
+        """))
         print((
             '\nThese options will be automatically saved in ~/{0}\n'
             'or ./{0} (if it exists).\n'
             '\nPrompts are python format strings and may include:\n    ')
             .format(OPTIONS_FILE),
             end='')
+        self.load_board_params()
         for i, k in enumerate(self.board.keys()):
             print(
                 "{:15}".format('{' + k + '}'),
@@ -1235,12 +1243,13 @@ class RemoteCmd(cmd.Cmd):
         print(inspect.cleandoc("""
         Where:
             {device/dev}: full or short name for the serial device
-            {colour/bold-colour}: insert an ANSI colour sequence
-            {reset}: pop the colour stack
-            {free/_pc}: the current free heap memory in bytes/percentage
             {sysname/nodename/release/version/machine}: set from uos.uname()
             {unique_id/id} from machine.unique_id() (id is last 3 octets)
+            {colour/bold-colour}: insert an ANSI colour sequence
+            {reset}: pop the colour stack
+            {bold/normal/underline/reverse}: insert an ANSI text sequence
             {pwd}: current working directory on board
+            {free/_pc}: the current free heap memory in bytes/percentage
             {lcdn}: last n parts of local working directory
             {name}: name of current board or {id} if name is not set"""))
 
@@ -1309,6 +1318,15 @@ class RemoteCmd(cmd.Cmd):
         self.write_exec(self._helper.cmd_hook_code)
         self.hooks_loaded = True
         self.write_exec('_helper.localtime_offset = {}'.format(-time.timezone))
+
+    def load_board_params(self) -> None:
+        'Initialise the board parameters - used in the longform prompt'
+        if 'id' in self.board:
+            return
+        self.board = {}
+        self.board['device'] = self.pyb.device_name
+        self.board['dev'] = re.sub(
+            r'^/dev/tty(.).*(.)$', r'\1\2', self.board['device'].lower())
         self.board.update(      # Update the board params from uos.uname()
             self.eval_exec('import uos;print("dict{}".format(uos.uname()))'))
         self.board['platform'], self.board['unique_id'] = (
@@ -1317,6 +1335,7 @@ class RemoteCmd(cmd.Cmd):
                 'print("({}, {})".format(repr(platform), unique_id()))'))
         self.board['unique_id'] = self.board['unique_id'].hex(':')
         self.board['id'] = self.board['unique_id'][-8:]  # Last 3 octets
+        self.board.update({c: self.colour.ansi(c) for c in self.colour.colour})
 
     def reset_hooks(self) -> None:
         self.hooks_loaded = False
@@ -1473,6 +1492,7 @@ class RemoteCmd(cmd.Cmd):
 
     def set_prompt(self) -> None:
         "Set the prompt using the prompt_fmt string."
+        self.load_board_params()
         pwd: str; alloc: int; free: int
         pwd, alloc, free = self.eval_exec('_helper.pr()')
         alloc, free = int(alloc), int(free)
