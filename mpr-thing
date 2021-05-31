@@ -31,7 +31,7 @@ from mpremote.pyboardextended import PyboardExtended, SerialIntercept
 from mpremote.console import ConsolePosix, ConsoleWindows
 
 from typing import (
-    Any, Dict, Generator, Union, Callable, Optional, List, Tuple, cast)
+    Any, Dict, Generator, Union, Callable, Optional, List, Tuple)
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
@@ -85,8 +85,9 @@ class catcher:
     # Save the last exception for use outside the context manager
     exception: Union[Exception, PyboardError, None] = None
 
-    def __init__(self, write_fn: Writer):
+    def __init__(self, write_fn: Writer, silent: bool = False):
         self.write_fn = write_fn
+        self.silent = silent
         catcher.exception = None
 
     def __enter__(self) -> Any:
@@ -98,23 +99,26 @@ class catcher:
         catcher.exception = None
         if exc_type == PyboardError:
             catcher.exception = value
-            self.write_fn(b"PyboardError: ")
-            if len(value.args) == 3:    # Raised by Pyboard.exec_()
-                self.write_fn(value.args[1])
-                self.write_fn(value.args[2])
-            else:                       # Others just include a single message
-                self.write_fn(value.args[0].encode())
+            if not self.silent:
+                self.write_fn(b"PyboardError: ")
+                if len(value.args) == 3:    # Raised by Pyboard.exec_()
+                    self.write_fn(value.args[1])
+                    self.write_fn(value.args[2])
+                else:           # Others just include a single message
+                    self.write_fn(value.args[0].encode())
         elif exc_type == KeyboardInterrupt:
             catcher.exception = value
         elif exc_type in (OSError, FileNotFoundError):
-            self.write_fn("{}: {}\r\n".format(
-                exc_type.__name__, value).encode())
+            if not self.silent:
+                self.write_fn("{}: {}\r\n".format(
+                    exc_type.__name__, value).encode())
         elif value is not None:
             catcher.exception = value
-            self.write_fn(b"Error:: ")
-            for arg in value.args:
-                self.write_fn(bytes("{}".format(arg), 'utf8'))
-            traceback.print_exc()
+            if not self.silent:
+                self.write_fn(b"Error:: ")
+                for arg in value.args:
+                    self.write_fn(bytes("{}".format(arg), 'utf8'))
+                traceback.print_exc()
         return True
 
 
@@ -389,9 +393,11 @@ class AnsiColour:
         return self.bold(spec, bold)
 
     # Return a colour decorated filename
-    def file(self, file: str, reset: str = '0') -> str:
+    def file(self, file: str, dir: bool = False, reset: str = '0') -> str:
         """Return "file" colourised according to the colour "ls" command."""
-        return self.colourise(self.pick(file), file, reset=reset)
+        return (
+            self.colourise(self.pick(file), file, reset=reset) if not dir else
+            self.dir(file, reset=reset))
 
     # Return a colour decorated directory
     def dir(self, file: str, reset: str = '0') -> str:
@@ -423,57 +429,35 @@ class AnsiColour:
                 (self.ansi('reset') if stack else ''))  # Force reset at end
 
 
+def is_dir(mode: int) -> bool:
+    return (mode & 0x4000 != 0)
+
+
+# Type hints for the file listing data
+LsFileList   = List[Tuple[str, int, int, int]]
+
+
 # A collection of helper functions for file listings and filename completion
 # to be uploaded to the micropython board and processed on the local host.
 class MagicHelper:
     # The helper code which runs on the micropython board
     cmd_hook_code = """\
+import uos
+
 class _MagicHelper:
-    import uos
 
-    def ls_dir(self, dir, long, recursive):
-        print('("{}",['.format(dir), end='')
-        dirs = []
-        for f, mode, *_ in uos.ilistdir(dir):
-            if mode & 0x4000:   # File is a directory
-                if recursive > 0 and f[0] != '.':
-                    dirs.append(f)
-                f += '/'
+    def is_dir(self, mode):
+        return ((mode & 0x4000) != 0)
+
+    def ls(self, dir, long):
+        print("[", end="")
+        for f in uos.ilistdir(dir):
             if long:
-                s = uos.stat(dir + ('/' if dir[-1] != '/' else '') + f)
-                print('("{}",{},{}),'.format(
-                    f, 0 if s[0] & 0x4000 else s[6], s[8]), end='')
+                s = uos.stat(dir+"/"+f[0])
+                print('("',f[0],'",',s[0],',',s[6],',',s[8],')',sep="",end=",")
             else:
-                print('"{}",'.format(f), end='')
-        print(']),')
-
-        for f in dirs:
-            self.ls_dir(
-                dir + ('/' if dir[-1] != '/' else '') + f,
-                long, recursive - 1)
-
-    def ls(self, args, long=False, recursive=0):
-        args = args or ['.']
-        dirs = []
-        print('[')
-        for f in args:
-            try:
-                s = uos.stat(f)
-            except OSError as err:
-                e = [f, "OSError:"]; e.extend(err.args)
-                print('{},'.format(e))
-                continue
-            if s[0] & 0x4000:  # File is a directory
-                dirs.append(f.rstrip('/') or '/')
-            else:
-                if long:
-                    print('("{}",{},{}),'.format(f, s[6], s[8]))
-                else:
-                    print('"{}",'.format(f))
-
-        for f in dirs:
-            self.ls_dir(f, long, recursive)
-        print(']')
+                print('("',f[0],'",',f[1],')',sep="",end=",")
+        print("]")
 
     def cp_file(self, f1, f2):
         f1, f2 = open(f1, "rb"), open(f2, "wb")
@@ -492,13 +476,13 @@ class _MagicHelper:
         try:
             uos.mkdir(dest)
         except:
-            if not uos.stat(dest)[0] & 0x4000:
+            if not self.is_dir(uos.stat(dest)[0]):
                 print('Can not overwrite non-directory {} with directory {}'
                     .format(dest, dir))
                 return
         print("mkdir:", dest)
         for f, m, *_ in uos.ilistdir(dir):
-            if m & 0x4000 and r > 0:
+            if self.is_dir(m) and r > 0:
                 self.cp_dir(dir + '/' + f, dest, r - 1)
             else:
                 self.cp_file(dir + '/' + f, dest + '/' + f)
@@ -508,21 +492,21 @@ class _MagicHelper:
             s = uos.stat(files[-1])
         except OSError:
             s = (0,)
-        if len(files) == 2 and not s[0] & 0x4000:
+        if len(files) == 2 and not self.is_dir(s[0]):
             self.cp_file(files[0], files[1])
             return
-        elif not s[0] & 0x4000:
+        elif not self.is_dir(s[0]):
             print("Destination must be a directory.")
             return
         for f in files[:-1]:
-            if uos.stat(f)[0] & 0x4000:
+            if self.is_dir(uos.stat(f)[0]):
                 self.cp_dir(f, files[-1], r)
             else:
                 self.cp_file(f, files[-1] + '/' + f[f.rfind('/')+1:])
 
     def mv(self, files):
         try:
-            dir_dest = uos.stat(files[-1])[0] & 0x4000
+            dir_dest = self.is_dir(uos.stat(files[-1])[0])
         except OSError:
             dir_dest = False
         if len(files) == 2 and not dir_dest:
@@ -547,7 +531,7 @@ class _MagicHelper:
             except OSError:
                 print('No such file:', f)
                 break
-            if m & 0x4000:
+            if self.is_dir(m):
                 if r > 0:
                     self.rm(((f + '/' + i[0]) for i in uos.ilistdir(f)), r - 1)
                     uos.rmdir(f)
@@ -558,14 +542,13 @@ class _MagicHelper:
                 print('Unable to remove:', f)
 
     def mkdir(self, dir):
-        import uos
         try:
             s = uos.stat(dir)
         except OSError:
             uos.mkdir(dir)
             print(True)
         else:
-            print((s[0] & 0x4000) != 0)
+            print(self.is_dir(s[0]))
 
     def f_m(self, match):  # file_matches for filename completion
         sep = match.rfind('/')
@@ -573,7 +556,7 @@ class _MagicHelper:
         try:
             matches = [
                 (d if d != '.' else '') + f[0] +
-                ('/' if f[1] & 0x4000 else '')  # Add / to directories
+                ('/' if self.is_dir(f[1]) else '')  # Add / to directories
                 for f in uos.ilistdir(d) if f[0].startswith(match)]
         except OSError:
             matches = '[]'
@@ -612,82 +595,45 @@ _helper = _MagicHelper()
             MagicHelper.do_hook_subs(
                 MagicHelper.hook_subs, MagicHelper.cmd_hook_code))
 
-    # Type hints for the file listing data
-    LsShortStyle = List[str]
-    LsLongStyle  = List[Tuple[str, int, int]]
-    LsFileList   = Union[LsShortStyle, LsLongStyle]
-
     # Methods to process data returned from the helper functions
-    def ls_files(self, file_list: LsFileList, colour: AnsiColour) -> None:
+    def print_files(
+            self,
+            files: LsFileList,
+            colour: AnsiColour,
+            opts: str) -> None:
         '''Print a file listing (long or short style) from data returned
         from the board.'''
         # Pretty printing for files on the board
-        if not file_list:
+        if not files:
             return
         columns = shutil.get_terminal_size().columns
-        file_list.sort()
-        if isinstance(file_list[0], str):
-            files = cast(MagicHelper.LsShortStyle, file_list)
+        if 'l' not in opts:
             # Short listing style - data is a list of filenames
-            if len(files) < 20 and sum(len(f) + 2 for f in files) < columns:
+            if len(files) < 20 and sum(len(f[0]) + 2 for f in files) < columns:
                 # Print all on one line
-                for f in files:
-                    print(colour.file(f), end='  ')
+                for f, mode, *_ in files:
+                    print(colour.file(f, dir=is_dir(mode)), end='  ')
                 print('')
             else:
                 # Print in columns - by row
-                w = max(len(f) for f in files) + 2
+                w = max(len(f) for f, *_ in files) + 2
                 spaces = ' ' * w
                 cols = columns // w
-                n = 1
-                for f in files:
+                for (i, (f, mode, *_)) in enumerate(files):
+                    n = i + 1
                     print(
-                        colour.file(f), spaces[len(f):], sep='',
-                        end=('' if n % cols and n < len(files) else '\n'))
-                    n += 1
+                        colour.file(f, dir=is_dir(mode)),
+                        spaces[len(f):], sep='',
+                        end=('' if n % cols and n < len(files) else '\n')
+                    )
         else:
-            # Long listing style - data is tuples of (filename, size, mtime)
-            files_long = cast(MagicHelper.LsLongStyle, file_list)
-            for f, size, mtime in files_long:
+            for f, mode, size, mtime in files:
                 if mtime < 40 * 31536000:  # ie. before 2010
                     mtime += 946684800   # Correct for epoch=2000 on uPython
                 print('{:9d} {} {}'.format(
-                    size,
+                    size if not is_dir(mode) else 0,
                     time.strftime('%a %x %X', time.localtime(mtime))[:-3],
-                    colour.file(f)))
-
-    # File listing: response is received from _helper.ls() on the board
-    def ls(self, response: bytes, colour: AnsiColour) -> None:
-        'Print a nice file listing from the data sent back from the board.'
-        if not response:
-            return
-        file_list = eval(response)
-        # First print any error messages from missing files: present as lists
-        for err in (f for f in file_list if isinstance(f, list)):
-            print('ls: connot access \'{}\': Not found: {}'.format(
-                err[0], err[1:]))
-
-        # Print any files listed on the command line
-        files = [
-            f for f in file_list
-            if isinstance(f, str) or (isinstance(f, tuple) and len(f) == 3)]
-        self.ls_files(cast(MagicHelper.LsFileList, files), colour)
-
-        # Print the listings of args which are directories
-        # Each dir is a tuple with len == 2: (dirname, [file1, file2, ..])
-        dirs = [
-            f for f in file_list
-            if isinstance(f, tuple) and len(f) == 2]
-        dirs.sort()
-        first_time = not files
-        for dir, files in dirs:
-            if not first_time:
-                print('')           # Insert a blank line between listings
-            first_time = False
-            if len(dirs) > 1:
-                print('{}:'.format(dir.rstrip('/') or '/'))
-            if files:
-                self.ls_files(cast(MagicHelper.LsFileList, files), colour)
+                    colour.file(f, dir=is_dir(mode))))
 
 
 class RemoteCmd(cmd.Cmd):
@@ -695,7 +641,7 @@ class RemoteCmd(cmd.Cmd):
     doc_header: str = (
         'Execute "%magic" commands at the micropython prompt, eg: %ls /\n'
         'Use "%%" to enter multiple command mode.\n'
-        'Furhter help is available for the following commands:\n'
+        'Further help is available for the following commands:\n'
         '======================================================')
     ruler = ''
     remote_cmds = (  # Commands for which glob expansion happens on the board
@@ -768,20 +714,60 @@ class RemoteCmd(cmd.Cmd):
             self.write_fn(response)
 
     ## Execute stuff on the micropython board
-    def exec(self, code: str, data_consumer: Optional[Writer] = None) -> bytes:
+    def exec(
+            self, code: str,
+            data_consumer: Optional[Writer] = None,
+            silent: bool = False) -> bytes:
         'Execute some code on the micropython board.'
         response: bytes = b''
-        with catcher(self.write):
+        with catcher(self.write, silent=silent):
             response = self.pyb.exec_(code, data_consumer)
         return response
 
-    def eval_exec(self, code: str) -> Any:
-        return eval(self.exec(code))
+    def eval_exec(self, code: str, silent: bool = False) -> Any:
+        output = self.exec(code, silent=silent)
+        return eval(output)
 
     def write_exec(self, code: str) -> None:
         self.exec(code, stdout_write_bytes)
 
     ## File commands
+    def ls_files(self, args: List[str]) -> Tuple[LsFileList, List[str]]:
+        files, dirs, not_found = [], [], []
+        args.sort()
+        for f in args:
+            with catcher(self.write, silent=True):
+                mode, size, mtime = self.eval_exec((
+                    'try: s=uos.stat("{}");print((s[0],s[6],s[8]))\n'
+                    'except: s=None\n').format(f), silent=True)
+            if catcher.exception:
+                not_found.append(f)
+            elif is_dir(mode):
+                dirs.append(f)
+            else:
+                files.append((f, mode, size, mtime))
+        for f in not_found:
+            print('%ls: cannot access \'{}\': Not found.'.format(f))
+        return files, dirs
+
+    def ls_dir(self, dir: str, opts: str = '') -> Tuple[LsFileList, List[str]]:
+        'Return a list of (name, mode, size, mtime) for files in "dir".'
+        files: LsFileList = []
+        with catcher(self.write, silent=True):
+            files = self.eval_exec(
+                '_helper.ls("{}",{})'
+                .format(dir, 'l' in opts), silent=True)
+            files.sort(key=lambda f: f[0])
+        if catcher.exception:
+            print('%ls: list directory \'{}\' failed.'.format(dir))
+        subdirs = (
+            sorted(
+                (dir.rstrip('/') + '/' + f)
+                for f, mode, *_ in files
+                if is_dir(mode) and f[0] != '.')
+            if 'R' in opts else [])
+        return files, subdirs
+
     def do_ls(self, args: List[str]) -> None:
         """
         List files on the board:
@@ -791,12 +777,24 @@ class RemoteCmd(cmd.Cmd):
         opts = ''
         if args and args[0][0] == "-":
             opts, *args = args
-        self._helper.ls(self.exec(
-            '_helper.ls({}, {}, {})'.format(
-                args,                        # Dirs and files to list
-                "l" in opts,                 # Use a long-style listing
-                10 if "R" in opts else 0)),  # Max recursion = 10
-            self.colour)
+        files, dirs = self.ls_files(args)
+        self._helper.print_files(files, self.colour, opts)
+        if not args:
+            dirs = ['.']
+        # Make a list of all the files and then print them
+        # Looks better than printing each folder as we scan it.
+        allfiles = []
+        for i, dir in enumerate(dirs):
+            subfiles, subdirs = self.ls_dir(dir, opts)
+            allfiles.append((dir, subfiles))
+            for subdir in reversed(subdirs):    # If recursive ('R' in opts)
+                dirs.insert(i + 1, subdir)      # Insert subdirs next in list
+        for i, (dir, subfiles) in enumerate(allfiles):
+            if i or files or len(dirs) > 1:
+                print(
+                    ('\n{}:' if (files or i) else '{}:')
+                    .format(self.colour.dir(dir)))
+            self._helper.print_files(subfiles, self.colour, opts)
 
     def do_cat(self, args: List[str]) -> None:
         """
@@ -947,7 +945,7 @@ class RemoteCmd(cmd.Cmd):
             %cd /lib"""
         arg = args[0] if args else '/'
         self.write_exec(
-            'import uos;_f="{}";uos.stat(_f);uos.chdir(_f)'
+            '_f="{}";uos.stat(_f);uos.chdir(_f)'
             .format(arg))
 
     def do_pwd(self, args: List[str]) -> None:
@@ -956,7 +954,7 @@ class RemoteCmd(cmd.Cmd):
             %pwd"""
         if args:
             print('pwd: unexpected args:', args)
-        self.write_exec('import uos;print(uos.getcwd())')
+        self.write_exec('print(uos.getcwd())')
 
     def do_lcd(self, args: List[str]) -> None:
         """
@@ -1074,7 +1072,7 @@ class RemoteCmd(cmd.Cmd):
         self.write(
             'Mounted local folder {} on /remote\r\n'
             .format(path).encode('utf-8'))
-        self.write_exec('import uos;print(uos.getcwd())')
+        self.write_exec('print(uos.getcwd())')
 
     def do_umount(self, args: List[str]) -> None:
         """
@@ -1084,7 +1082,7 @@ class RemoteCmd(cmd.Cmd):
             print('umount: unexpected args:', args)
         # Must chdir before umount or bad things happen.
         self.write_exec(
-            'import uos;uos.getcwd()[:7]=="/remote" and uos.chdir("/")')
+            'uos.getcwd()[:7]=="/remote" and uos.chdir("/")')
         self.pyb.umount_local()
         self.write_exec('print(uos.getcwd())')
 
@@ -1328,7 +1326,7 @@ class RemoteCmd(cmd.Cmd):
         self.board['dev'] = re.sub(
             r'^/dev/tty(.).*(.)$', r'\1\2', self.board['device'].lower())
         self.board.update(      # Update the board params from uos.uname()
-            self.eval_exec('import uos;print("dict{}".format(uos.uname()))'))
+            self.eval_exec('print("dict{}".format(uos.uname()))'))
         self.board['platform'], self.board['unique_id'] = (
             self.eval_exec(
                 'from machine import unique_id;from sys import platform\n'
@@ -1497,16 +1495,18 @@ class RemoteCmd(cmd.Cmd):
         pwd, alloc, free = self.eval_exec('_helper.pr()')
         alloc, free = int(alloc), int(free)
         free_pc = round(100 * free / (alloc + free))
+        heap_used = str(max(0, self.board.get('free', free) - free)).rjust(5)
 
         # Update some dynamic info for the prompt
         self.board['pwd']       = pwd
+        self.board['heap_used'] = heap_used
         self.board['free']      = free
         self.board['free_pc']   = free_pc
         self.board['lcd']       = os.getcwd()
         self.board['lcd3']      = '/'.join(os.getcwd().rsplit('/', 3)[1:])
         self.board['lcd2']      = '/'.join(os.getcwd().rsplit('/', 2)[1:])
         self.board['lcd1']      = '/'.join(os.getcwd().rsplit('/', 1)[1:])
-        self.board['name'] = self.names.get(    # Look up name for board
+        self.board['name']      = self.names.get(    # Look up name for board
             self.board['unique_id'], self.board['id'])
 
         prompt_colours = {
