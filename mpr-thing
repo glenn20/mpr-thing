@@ -24,7 +24,7 @@
 
 # vscode-fold=2
 
-import os, select, re, sys, readline
+import os, select, re, sys, readline, locale
 
 from mpremote.pyboard import PyboardError, stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended, SerialIntercept
@@ -38,6 +38,9 @@ Writer = Callable[[bytes], None]  # A type alias for console write functions
 from colorama import init as colorama_init  # For ansi colour on Windows
 
 colorama_init()
+
+# Set locale for file listings, etc.
+locale.setlocale(locale.LC_ALL, '')
 
 HISTORY_FILE = '~/.mpr-thing.history'
 OPTIONS_FILE = '.mpr-thing.options'
@@ -434,7 +437,7 @@ def is_dir(mode: int) -> bool:
 
 
 # Type hints for the file listing data
-LsFileList   = List[Tuple[str, int, int, int]]
+LsFileList = List[Tuple[str, int, int, int]]
 
 
 # A collection of helper functions for file listings and filename completion
@@ -470,15 +473,15 @@ class _MagicHelper:
 
     def cp_dir(self, dir, dest, r=0):
         if r <= 0:
-            print("Can not copy directory {}: Increase recursion".format(dir))
+            print('Can not copy directory', dir, ': Increase recursion')
             return
         dest += '/' + dir[dir.rfind('/')+1:]
         try:
             uos.mkdir(dest)
         except:
             if not self.is_dir(uos.stat(dest)[0]):
-                print('Can not overwrite non-directory {} with directory {}'
-                    .format(dest, dir))
+                print('Can not overwrite non-directory',
+                    dest, 'with directory', dir)
                 return
         print("mkdir:", dest)
         for f, m, *_ in uos.ilistdir(dir):
@@ -575,65 +578,25 @@ _helper = _MagicHelper()
     # Apply basic compression on hook code - (from mpremote tool).
     HookSubsType = List[Tuple[str, str, Dict[str, int]]]
     hook_subs: HookSubsType = [
-        (" *#.*$",  "",     {'flags': re.MULTILINE}),
-        ("\n\n+",   "\n",   {}),
-        ("    ",    " ",    {}),
-        (r"([,;])  *",    r"\1",    {}),
-        (r"  *([=+-])  *",   r"\1",    {}),
+        (" *#.*$",          "",     {'flags': re.MULTILINE}),
+        ("\n\n+",           "\n",   {}),
+        ("    ",            " ",    {}),
+        (r"([,;])  *",      r"\1",  {}),
+        (r"  *([=+-])  *",  r"\1",  {}),
     ]
 
     @staticmethod
     def do_hook_subs(subs: HookSubsType, code: str) -> str:
         'Apply compression techniques to the code before uploading to board.'
         for sub in subs:
-            a, b, flags  = sub
-            code         = re.sub(a, b, code, **flags)
+            a, b, flags = sub
+            code = re.sub(a, b, code, **flags)
         return code
 
     def __init__(self) -> None:
         MagicHelper.cmd_hook_code = (
             MagicHelper.do_hook_subs(
                 MagicHelper.hook_subs, MagicHelper.cmd_hook_code))
-
-    # Methods to process data returned from the helper functions
-    def print_files(
-            self,
-            files: LsFileList,
-            colour: AnsiColour,
-            opts: str) -> None:
-        '''Print a file listing (long or short style) from data returned
-        from the board.'''
-        # Pretty printing for files on the board
-        if not files:
-            return
-        columns = shutil.get_terminal_size().columns
-        if 'l' not in opts:
-            # Short listing style - data is a list of filenames
-            if len(files) < 20 and sum(len(f[0]) + 2 for f in files) < columns:
-                # Print all on one line
-                for f, mode, *_ in files:
-                    print(colour.file(f, dir=is_dir(mode)), end='  ')
-                print('')
-            else:
-                # Print in columns - by row
-                w = max(len(f) for f, *_ in files) + 2
-                spaces = ' ' * w
-                cols = columns // w
-                for (i, (f, mode, *_)) in enumerate(files):
-                    n = i + 1
-                    print(
-                        colour.file(f, dir=is_dir(mode)),
-                        spaces[len(f):], sep='',
-                        end=('' if n % cols and n < len(files) else '\n')
-                    )
-        else:
-            for f, mode, size, mtime in files:
-                if mtime < 40 * 31536000:  # ie. before 2010
-                    mtime += 946684800   # Correct for epoch=2000 on uPython
-                print('{:9d} {} {}'.format(
-                    size if not is_dir(mode) else 0,
-                    time.strftime('%a %x %X', time.localtime(mtime))[:-3],
-                    colour.file(f, dir=is_dir(mode))))
 
 
 class RemoteCmd(cmd.Cmd):
@@ -643,28 +606,28 @@ class RemoteCmd(cmd.Cmd):
         'Use "%%" to enter multiple command mode.\n'
         'Further help is available for the following commands:\n'
         '======================================================')
-    ruler = ''
-    remote_cmds = (  # Commands for which glob expansion happens on the board
+    ruler = ''       # Cmd.ruler is broken if doc_header is multi-line
+    remote_cmds = (  # Cmds for which glob (*) expansion happens on the board
         'ls', 'cat', 'edit', 'touch', 'mv', 'cp', 'rm', 'get',
         'cd', 'mkdir', 'rmdir', 'echo')
 
     def __init__(self, pyb: PyboardExtended, console_out_write: Writer):
         self.pyb                = pyb
         self.colour             = AnsiColour()
-        self._helper            = MagicHelper()
+        self.helper             = MagicHelper()
         self.write_fn           = console_out_write
         self.prompt             = self.base_prompt
         self.prompt_fmt         = ('{bold-cyan}{id} {yellow}{platform}'
                                    ' ({free}){bold-blue}{pwd}> ')
-        self.hooks_loaded       = False
+        self.hooks_loaded       = False     # Is the _helper loaded on board
         self.options_loaded     = False
         self.rcfile_loaded      = False
         self.single_cmd_mode    = True
-        self.prompt_colour      = 'yellow'
-        self.alias              = {'ll': 'ls -l'}
-        self.board: Dict[str, Any] = {}
-        self.names: Dict[str, str] = {}
-        self.colour_spec_extra: Dict[str, str] = {}
+        self.prompt_colour      = 'yellow'  # Colour of the short prompt
+        self.alias: Dict[str, str] = {}     # Command aliases
+        self.board: Dict[str, Any] = {}     # Params we can use in prompt
+        self.names: Dict[str, str] = {}     # Map device unique_ids to names
+        self.lsspec: Dict[str, str] = {}    # Extra colour specs for %ls
         readline.set_completer_delims(' \t\n>;')
         super().__init__()
 
@@ -725,15 +688,51 @@ class RemoteCmd(cmd.Cmd):
         return response
 
     def eval_exec(self, code: str, silent: bool = False) -> Any:
-        output = self.exec(code, silent=silent)
-        return eval(output)
+        return eval(self.exec(code, silent=silent))
 
     def write_exec(self, code: str) -> None:
         self.exec(code, stdout_write_bytes)
 
     ## File commands
+    def print_files(self, files: LsFileList, opts: str) -> None:
+        '''Print a file listing (long or short style) from data returned
+        from the board.'''
+        # Pretty printing for files on the board
+        if not files:
+            return
+        columns = shutil.get_terminal_size().columns
+        if 'l' in opts:
+            # Long listing style - data is a list of filenames
+            for f, mode, size, mtime in files:
+                if mtime < 40 * 31536000:  # ie. before 2010
+                    mtime += 946684800   # Correct for epoch=2000 on uPython
+                print('{:9d} {} {}'.format(
+                    size if not is_dir(mode) else 0,
+                    time.strftime(
+                        '%c',
+                        time.localtime(mtime)).replace(' 0', '  ')[:-3],
+                    self.colour.file(f, dir=is_dir(mode))))
+        else:
+            # Short listing style - data is a list of filenames
+            if len(files) < 20 and sum(len(f[0]) + 2 for f in files) < columns:
+                # Print all on one line
+                for f, mode, *_ in files:
+                    print(self.colour.file(f, dir=is_dir(mode)), end='  ')
+                print('')
+            else:
+                # Print in columns - by row
+                w = max(len(f) for f, *_ in files) + 2
+                spaces = ' ' * w
+                cols = columns // w
+                for (i, (f, mode, *_)) in enumerate(files):
+                    n = i + 1
+                    print(
+                        self.colour.file(f, dir=is_dir(mode)),
+                        spaces[len(f):], sep='',
+                        end=('' if n % cols and n < len(files) else '\n'))
+
     def ls_files(self, args: List[str]) -> Tuple[LsFileList, List[str]]:
-        files, dirs, not_found = [], [], []
+        files, dirs = [], []
         args.sort()
         for f in args:
             with catcher(self.write, silent=True):
@@ -741,13 +740,11 @@ class RemoteCmd(cmd.Cmd):
                     'try: s=uos.stat("{}");print((s[0],s[6],s[8]))\n'
                     'except: s=None\n').format(f), silent=True)
             if catcher.exception:
-                not_found.append(f)
+                print('%ls: cannot access \'{}\': Not found.'.format(f))
             elif is_dir(mode):
                 dirs.append(f)
             else:
                 files.append((f, mode, size, mtime))
-        for f in not_found:
-            print('%ls: cannot access \'{}\': Not found.'.format(f))
         return files, dirs
 
     def ls_dir(self, dir: str, opts: str = '') -> Tuple[LsFileList, List[str]]:
@@ -760,11 +757,11 @@ class RemoteCmd(cmd.Cmd):
             files.sort(key=lambda f: f[0])
         if catcher.exception:
             print('%ls: list directory \'{}\' failed.'.format(dir))
-        subdirs = (
+        subdirs = (     # List of subdirectories if -R on commandline
             sorted(
                 (dir.rstrip('/') + '/' + f)
                 for f, mode, *_ in files
-                if is_dir(mode) and f[0] != '.')
+                if is_dir(mode) and f[0] != '.')  # Don't recurse into .dirs
             if 'R' in opts else [])
         return files, subdirs
 
@@ -778,7 +775,7 @@ class RemoteCmd(cmd.Cmd):
         if args and args[0][0] == "-":
             opts, *args = args
         files, dirs = self.ls_files(args)
-        self._helper.print_files(files, self.colour, opts)
+        self.print_files(files, opts)
         if not args:
             dirs = ['.']
         # Make a list of all the files and then print them
@@ -794,7 +791,7 @@ class RemoteCmd(cmd.Cmd):
                 print(
                     ('\n{}:' if (files or i) else '{}:')
                     .format(self.colour.dir(dir)))
-            self._helper.print_files(subfiles, self.colour, opts)
+            self.print_files(subfiles, opts)
 
     def do_cat(self, args: List[str]) -> None:
         """
@@ -840,6 +837,7 @@ class RemoteCmd(cmd.Cmd):
         Make a copy of a file or directory on the board, eg:
             %cp [-r] existing new
             %cp *.py /app"""
+        # TODO: Fix "cp existing_dir new_dir_name"
         opts = ''
         if args and args[0][0] == "-":
             opts, *args = args
@@ -1153,7 +1151,7 @@ class RemoteCmd(cmd.Cmd):
             if not alias or not value:
                 print('Invalid alias: "{}"'.format(arg))
                 continue
-            self.alias[alias] = value.strip()
+            self.alias[alias] = value
 
     def do_set(self, args: List[str]) -> None:
         for arg in args:
@@ -1195,8 +1193,8 @@ class RemoteCmd(cmd.Cmd):
                     if colour[0] != '\x1b':
                         print('%set: unknown colour:', v)
                         continue
-                    self.colour_spec_extra[k.lstrip('*')] = v
-                self.colour.spec.update(self.colour_spec_extra)
+                    self.lsspec[k.lstrip('*')] = v
+                self.colour.spec.update(self.lsspec)
             else:
                 print("%set: unknown key:", key)
         # Save the options in a startup file
@@ -1210,7 +1208,7 @@ class RemoteCmd(cmd.Cmd):
             f.write('set promptcolour="{}"\n'.format(self.prompt_colour))
             f.write('set names=\'{}\'\n'.format(json.dumps(self.names)))
             f.write('set lscolour=\'{}\'\n'.format(
-                json.dumps(self.colour_spec_extra)))
+                json.dumps(self.lsspec)))
 
     def help_set(self) -> None:
         if self.do_set.__doc__:
@@ -1313,7 +1311,7 @@ class RemoteCmd(cmd.Cmd):
 
     def reload_hooks(self) -> None:
         'Load/reload the helper code onto the micropython board.'
-        self.write_exec(self._helper.cmd_hook_code)
+        self.write_exec(self.helper.cmd_hook_code)
         self.hooks_loaded = True
         self.write_exec('_helper.localtime_offset = {}'.format(-time.timezone))
 
