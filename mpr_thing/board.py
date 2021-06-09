@@ -19,58 +19,32 @@ Writer = Callable[[bytes], None]  # A type alias for console write functions
 PathLike = Union[str, os.PathLike]
 
 
-# Some helper classes for managing lists of files returned from the board
+# A Pathlib-compatible class to hold details on files from the board
 # Paths on the board are always Posix paths even if local host is Windows
-class File(PurePosixPath):
+class RemotePath(PurePosixPath):
     'A Path class with file status attributes attached.'
-    def __new__(cls, *args: str, **_: Dict[str, Any]) -> 'File':
-        # Need this because PurePath.__new__() does not take kwargs
+    def __new__(cls, *args: str, **_: Dict[str, Any]) -> 'RemotePath':
+        # Need this because PurePath.__new__() does not take kwargs and
+        # initialises the instances in __new__() not __init__()
         return super().__new__(cls, *args)
 
     def __init__(
             self, *args: str,
             stat: Sequence[int] = [],
             exists: bool = True) -> None:
-        self.mode   = stat[0] if stat else 0
-        self.size   = stat[1] if stat[1:] else 0
-        self.mtime  = stat[2] if stat[2:] else 0
-        self.exists = exists
-
-    def path(self) -> str:
-        return str(self)
+        self.mode    = stat[0] if stat else 0
+        self.size    = stat[1] if stat[1:] else 0
+        self.mtime   = stat[2] if stat[2:] else 0
+        self._exists = exists
 
     def is_dir(self) -> bool:
-        return self.exists and ((self.mode & 0x4000) != 0)
+        return self._exists and ((self.mode & 0x4000) != 0)
 
     def is_file(self) -> bool:
-        return self.exists and not ((self.mode & 0x4000) != 0)
+        return self._exists and not ((self.mode & 0x4000) != 0)
 
-
-class FileList(List[File]):
-    'A list of "File"s: used for file listings from the board.'
-    @property
-    def files(self) -> Generator[File, None, None]:
-        return (f for f in self if f.is_file())
-
-    @property
-    def dirs(self) -> Generator[File, None, None]:
-        return (f for f in self if f.is_dir())
-
-    @property
-    def not_found(self) -> Generator[File, None, None]:
-        return (f for f in self if not f.exists)
-
-    def file(self, name: str, dir: str = '') -> File:
-        'Return File with "name". Return File(exists=False) if not found.'
-        return next(
-            (f for f in self if f.name == name),
-            File(dir, name, exists=False))
-
-    def is_file(self, name: str) -> bool:
-        return any(f for f in self.files if f.name == name)
-
-    def is_dir(self, name: str) -> bool:
-        return any(f for f in self.dirs if f.name == name)
+    def exists(self) -> bool:
+        return self._exists
 
 
 # A collection of helper functions for file listings and filename completion
@@ -207,31 +181,32 @@ class Board:
     def ls_files(
             self,
             filenames:  Iterable[str]
-            ) -> FileList:
-        'Return a list of File(name, mode, size, mtime) for list of filenames.'
-        files = FileList()
+            ) -> Iterable[RemotePath]:
+        'Return a list of files (RemotePath) on board for list of filenames.'
+        files: List[RemotePath] = []
         for f in filenames:
             with catcher(self.write, silent=True):
                 mode, size, mtime = self.eval((
                     'try: s=uos.stat("{}");print((s[0],s[6],s[8]))\n'
                     'except: s=None\n').format(f), silent=True)
             files.append(
-                File(f, stat=(mode, size, mtime)) if not catcher.exception else
-                File(f, exists=False))
+                RemotePath(f, stat=(mode, size, mtime))
+                if not catcher.exception else
+                RemotePath(f, exists=False))
         return files
 
     def ls_dir(
             self,
             dir:    str,
             long:   bool = False
-            ) -> Optional[FileList]:
-        'Return a list of File(name, mode, size, mtime) for files in "dir".'
+            ) -> Optional[Iterable[RemotePath]]:
+        'Return a list of files (RemotePath) on board in "dir".'
         with catcher(self.write, silent=True):
-            files = FileList([
-                File(dir, f, stat=stat)
+            files = [
+                RemotePath(dir, f, stat=stat)
                 for f, *stat in self.eval(
                     '_helper.ls("{}",{})'.format(dir, long),
-                    silent=True)])
+                    silent=True)]
             files.sort(key=lambda f: f.name)
         if catcher.exception:
             print('ls_dir(): list directory \'{}\' failed.'.format(dir))
@@ -242,16 +217,18 @@ class Board:
             self,
             filenames:  Iterable[str],
             opts:       str
-            ) -> Generator[Tuple[str, FileList], None, None]:
+            ) -> Generator[Tuple[str, Iterable[RemotePath]], None, None]:
         "Return a list of files on the board."
         recursive = 'R' in opts
         long_style = 'l' in opts
         filenames = list(filenames)
         filenames.sort
         files = self.ls_files(filenames)
-        yield ('', FileList(files.files))
+        yield ('', [f for f in files if f.is_file()])
 
-        dirs = list(files.dirs) if filenames else [File('.')]
+        dirs = (
+            list(d for d in files if d.is_dir()) if filenames else
+            [RemotePath('.')])
         for i, dir in enumerate(dirs):
             subfiles = self.ls_dir(str(dir), long_style)
             if subfiles is not None:
@@ -259,7 +236,8 @@ class Board:
 
                 if recursive:     # Recursive listing
                     # As we find subdirs, insert them next in the list
-                    for j, subdir in enumerate(subfiles.dirs):
+                    for j, subdir in enumerate(
+                            d for d in subfiles if d.is_dir()):
                         dirs.insert(i + j + 1, subdir)
 
     def get_file(self, filename: str, dest: str) -> None:
@@ -282,7 +260,7 @@ class Board:
             print('get: Destination directory does not exist:', dest)
             return
         for file in self.ls_files(filenames):
-            # dir: str, file: FileList (list of full pathnames)
+            # dir: str, file: RemotePathList (list of full pathnames)
             if not file.is_dir():
                 f2 = dest / file.name
                 if verbose: print(str(f2))
@@ -351,7 +329,7 @@ class Board:
                 # Dest subdir is dest + relative path from dir to base
                 destdir = dest / dir.relative_to(base)
                 if not dry_run:
-                    d = self.ls_files([str(destdir)])[0]
+                    d = list(self.ls_files([str(destdir)]))[0]
                     if not d.is_dir():
                         self.mkdir(str(destdir))
                 for f in files:

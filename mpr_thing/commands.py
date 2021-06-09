@@ -13,7 +13,7 @@ from typing import (
     Any, Dict, Iterable, Callable, Optional, List, Tuple)
 
 from .catcher import catcher
-from .board import File, Board
+from .board import RemotePath, Board
 
 from colorama import init as colorama_init  # For ansi colour on Windows
 
@@ -287,7 +287,7 @@ class RemoteCmd(cmd.Cmd):
             self.write_fn(response)
 
     # File commands
-    def print_files(self, files: Iterable[File], opts: str) -> None:
+    def print_files(self, files: Iterable[RemotePath], opts: str) -> None:
         '''Print a file listing (long or short style) from data returned
         from the board.'''
         # Pretty printing for files on the board
