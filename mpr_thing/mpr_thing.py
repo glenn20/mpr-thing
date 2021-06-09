@@ -1,28 +1,8 @@
-#!/usr/bin/env python3
+# MIT License: Copyright (c) 2021 @glenn20
 
-# MIT License
+# vscode-fold=1
 
-# Copyright (c) 2021 @glenn20
 
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
-# vscode-fold=2
 
 import select, re, sys, time
 from typing import (Union, Callable)
@@ -43,7 +23,7 @@ Writer = Callable[[bytes], None]  # A type alias for console write functions
 def hard_reset(pyb: PyboardExtended) -> None:
     'Toggle DTR on the serial port to force a hardware reset of the board.'
     while hasattr(pyb.serial, 'orig_serial'):
-        pyb.serial = pyb.serial.orig_serial     # type: ignore
+        pyb.serial = pyb.serial.orig_serial
     serial: Serial = pyb.serial
     if hasattr(serial, 'dtr'):
         serial.dtr = not serial.dtr
@@ -96,7 +76,7 @@ def my_do_repl_main_loop(
         if isinstance(console_in, ConsolePosix):
             # TODO pyb.serial might not have fd
             select.select(
-                [console_in.infd, pyb.serial.fd], [], [])  # type: ignore
+                [console_in.infd, pyb.serial.fd], [], [])
         else:
             while not (console_in.inWaiting() or pyb.serial.inWaiting()):
                 time.sleep(0.01)
