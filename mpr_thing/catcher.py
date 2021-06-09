@@ -21,15 +21,12 @@ class catcher:
     def __init__(self, write_fn: Writer, silent: bool = False):
         self.write_fn = write_fn
         self.silent = silent
-        catcher.exception = None
 
     def __enter__(self) -> Any:
         catcher.exception = None
         pass
 
-    def __exit__(
-            self, exc_type: Any, value: Exception, tr: Any) -> bool:
-        catcher.exception = None
+    def __exit__(self, exc_type: Any, value: Exception, tr: Any) -> bool:
         if exc_type == PyboardError:
             catcher.exception = value
             if not self.silent:
@@ -55,7 +52,7 @@ class catcher:
         return True
 
 
-# A context manager for the raw_repl
+# A context manager for the raw_repl - not re-entrant
 class raw_repl(catcher):
     def __init__(
             self,
@@ -70,7 +67,7 @@ class raw_repl(catcher):
 
     def __enter__(self) -> PyboardExtended:
         super().__enter__()
-        # We can nest raw_repl()s - only enter the raw repl if necessary
+        # We can nest raw_repl() managers - only enter raw repl if necessary
         if not self.pyb.in_raw_repl:
             self.restore_repl = True
             self.pyb.enter_raw_repl(self.soft_reset)
@@ -78,7 +75,7 @@ class raw_repl(catcher):
 
     def __exit__(
             self, exc_type: Any, value: Exception, traceback: Any) -> bool:
-        # Only exit the raw_repl if we entered it with this context manager
+        # Only exit the raw_repl if we entered it with this instance
         if self.restore_repl and self.pyb.in_raw_repl:
             self.pyb.exit_raw_repl()
             self.pyb.read_until(4, b">>> ")
