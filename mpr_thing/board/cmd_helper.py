@@ -129,15 +129,6 @@ class _MagicHelper:
             else:
                 print('Unable to remove:', f)
 
-    def mkdir(self, dir):
-        try:
-            s = uos.stat(dir)
-        except OSError:
-            uos.mkdir(dir)
-            print(True)
-        else:
-            print(is_dir(s[0]))
-
     import gc
 
     def pr(self):   # Return some dynamic values for the command prompt
