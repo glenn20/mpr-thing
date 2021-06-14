@@ -7,11 +7,11 @@
 import os, re
 from pathlib import PurePosixPath, Path
 from typing import (
-    Any, Dict, Generator, Sequence, Union,
-    Iterable, Callable, Optional, List, Tuple)
+    Any, Dict, Sequence, Union, Iterable, Callable, Optional, List, Tuple)
 
-from mpremote.pyboard import stdout_write_bytes
+from mpremote.pyboard import stdout_write_bytes as pyboard_stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended
+from mpremote.main import execbuffer
 
 from .catcher import catcher, raw_repl
 
@@ -103,22 +103,29 @@ class Board:
     # Execute stuff on the micropython board
     def exec_(
             self,
-            code:   Union[str, bytes],
-            reader: Optional[Writer] = None,
-            silent: bool = False
+            code:       Union[str, bytes],
+            reader:     Optional[Writer] = None,
+            silent:     bool = False,
+            follow:     bool = True,
             ) -> bytes:
         'Execute some code on the micropython board.'
-        response: bytes = b''
-        with raw_repl(self.pyb, self.write, silent=silent):
-            response = self.pyb.exec_(code, reader)
-        return response
+        if follow:
+            response: bytes = b''
+            with raw_repl(self.pyb, self.write, silent=silent):
+                response = self.pyb.exec_(code, reader)
+            return response
+        else:
+            with raw_repl(self.pyb, self.write, silent=silent):
+                _ = execbuffer(self.pyb, code, follow=False)
+            return b''
 
     def eval(self, code: str, silent: bool = False) -> Any:
         # TODO: Use json for return values from board - for safety
-        return eval(self.exec_(code, silent=silent))
+        response = self.exec_(code, silent=silent)
+        return eval(response)
 
-    def exec(self, code: Union[str, bytes]) -> None:
-        self.exec_(code, stdout_write_bytes)
+    def exec(self, code: Union[str, bytes], follow: bool = True) -> None:
+        self.exec_(code, pyboard_stdout_write_bytes, follow=follow)
 
     def cat(self, filename: str) -> None:
         'List the contents of the file "filename" on the board.'
@@ -201,7 +208,7 @@ class Board:
             long:   bool = False
             ) -> Optional[Iterable[RemotePath]]:
         'Return a list of files (RemotePath) on board in "dir".'
-        with catcher(self.write, silent=True):
+        with catcher(self.write, silent=False):
             files = [
                 RemotePath(dir, f, stat=stat)
                 for f, *stat in self.eval(
@@ -210,6 +217,7 @@ class Board:
             files.sort(key=lambda f: f.name)
         if catcher.exception:
             print('ls_dir(): list directory \'{}\' failed.'.format(dir))
+            print(catcher.exception)
             return None
         return files
 
@@ -217,7 +225,7 @@ class Board:
             self,
             filenames:  Iterable[str],
             opts:       str
-            ) -> Generator[Tuple[str, Iterable[RemotePath]], None, None]:
+            ) -> Iterable[Tuple[str, Iterable[RemotePath]]]:
         "Return a list of files on the board."
         recursive = 'R' in opts
         long_style = 'l' in opts
@@ -245,6 +253,33 @@ class Board:
         with raw_repl(self.pyb, self.write):
             self.pyb.fs_get(filename, dest)
 
+    def get_dir(
+            self,
+            dir:        PathLike,
+            dest:       PathLike,
+            verbose:    bool,
+            dry_run:    bool
+            ) -> None:
+        'Recursively copy a directory from the micropython board.'
+        # dir is subdirectory name for recursive
+        base: Optional[Path] = None
+        for subdir, filelist in self.ls([str(dir)], '-R'):
+            # First non-empty subdir is base of a recursive listing
+            base = Path(subdir).parent if subdir and base is None else base
+            # Destination subdir is dest + relative path from dir to base
+            destdir = (
+                dest / Path(subdir).relative_to(base)) if base else Path()
+            if not destdir.is_dir():
+                if verbose: print(str(destdir))
+                if not dry_run:
+                    os.mkdir(destdir)
+            for f in filelist:
+                f2 = destdir / f.name
+                if f.is_file():
+                    if verbose: print(str(f2))
+                    if not dry_run:
+                        self.get_file(str(f), str(f2))
+
     def get(
             self,
             filenames:  Iterable[str],
@@ -265,36 +300,42 @@ class Board:
                 f2 = dest / file.name
                 if verbose: print(str(f2))
                 if not dry_run: self.get_file(str(file), str(f2))
-                continue
-            # else file is dir
-            if not recursive:
+            elif recursive:  # Is a directory
+                self.get_dir(file, dest, verbose, dry_run)
+            else:
                 print('get: skipping "{}", use "-r" to copy directories.'
                       .format(str(file)))
-                continue
-
-            # dir is subdirectory name for recursive
-            base: Optional[Path] = None
-            for dir, filelist in self.ls([str(file)], '-R'):
-                # First non-empty dir is base of a recursive listing
-                base = Path(dir).parent if dir and base is None else base
-                # Destination subdir is dest + relative path from dir to base
-                destdir = (
-                    dest / Path(dir).relative_to(base)) if base else Path()
-                if not destdir.is_dir():
-                    if verbose: print(str(destdir))
-                    if not dry_run:
-                        os.mkdir(destdir)
-                for f in filelist:
-                    f2 = destdir / f.name
-                    if f.is_file():
-                        if verbose: print(str(f2))
-                        if not dry_run:
-                            self.get_file(str(f), str(f2))
 
     def put_file(self, filename: str, dest: str) -> None:
         'Copy a local file "filename" to the "dest" folder on the board.'
         with raw_repl(self.pyb, self.write):
             self.pyb.fs_put(filename, dest)
+
+    def put_dir(
+            self,
+            dir:        Path,
+            dest:       Path,
+            verbose:    bool = False,
+            dry_run:    bool = False
+            ) -> None:
+        'Recursively copy a directory to the micropython board.'
+        base = dir.parent
+        # Destination subdir is dest + basename of file
+        destdir = dest / dir.name
+
+        for subdirname, _, files in os.walk(dir):
+            subdir = Path(subdirname)
+            # Dest subdir is dest + relative path from dir to base
+            destdir = dest / subdir.relative_to(base)
+            if not dry_run:
+                d = list(self.ls_files([str(destdir)]))[0]
+                if not d.is_dir():
+                    self.mkdir(str(destdir))
+            for f in files:
+                f1, f2 = subdir / f, destdir / f
+                if verbose: print(str(f2))
+                if not dry_run:
+                    self.put_file(str(f1), str(f2))
 
     def put(
             self,
@@ -314,26 +355,8 @@ class Board:
                 if verbose: print(f2)
                 if not dry_run:
                     self.put_file(str(file), str(f2))
-                continue
-            if not recursive:
+            elif recursive:
+                self.put_dir(self, file, )
+            else:
                 print('put: skipping "{}", use "-r" to copy directories.'
                       .format(str(file)))
-                continue
-
-            base = file.parent
-            # Destination subdir is dest + basename of file
-            destdir = dest / file.name
-
-            for dirname, _, files in os.walk(file):
-                dir = Path(dirname)
-                # Dest subdir is dest + relative path from dir to base
-                destdir = dest / dir.relative_to(base)
-                if not dry_run:
-                    d = list(self.ls_files([str(destdir)]))[0]
-                    if not d.is_dir():
-                        self.mkdir(str(destdir))
-                for f in files:
-                    f1, f2 = dir / f, destdir / f
-                    if verbose: print(str(f2))
-                    if not dry_run:
-                        self.put_file(str(f1), str(f2))
