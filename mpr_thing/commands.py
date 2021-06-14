@@ -6,13 +6,14 @@
 
 # vscode-fold=2
 
-import os, re, readline, locale, time, cmd
-import shutil, traceback, json, inspect, shlex
-import glob, fnmatch, subprocess, itertools
+import os, re, readline, locale, time, cmd, shutil, traceback
+import json, inspect, shlex, glob, fnmatch, subprocess, itertools
 from typing import (
     Any, Dict, Iterable, Callable, Optional, List, Tuple)
 
-from .catcher import catcher
+from mpremote.main import do_command_expansion as mpremote_do_command_expansion
+
+from .catcher import catcher, raw_repl
 from .board import RemotePath, Board
 
 from colorama import init as colorama_init  # For ansi colour on Windows
@@ -191,7 +192,7 @@ class LocalCmd(cmd.Cmd):
         print(os.getcwd())
 
     def default(self, line: str) -> bool:
-        os.system(line)
+        os.system(line)  # TODO: Use interactive shell - subprocess
         return True
 
     def emptyline(self) -> bool:
@@ -210,7 +211,7 @@ class RemoteCmd(cmd.Cmd):
         '======================================================')
     ruler = ''       # Cmd.ruler is broken if doc_header is multi-line
     remote_cmds = (  # Cmds for which glob (*) expansion happens on the board
-        'ls', 'cat', 'edit', 'touch', 'mv', 'cp', 'rm', 'get',
+        'fs', 'ls', 'cat', 'edit', 'touch', 'mv', 'cp', 'rm', 'get',
         'cd', 'mkdir', 'rmdir', 'echo')
 
     def __init__(self, board: Board):
@@ -223,7 +224,7 @@ class RemoteCmd(cmd.Cmd):
         self.hooks_loaded       = False     # Is the _helper loaded on board
         self.options_loaded     = False
         self.rcfile_loaded      = False
-        self.single_cmd_mode    = True
+        self.multi_cmd_mode     = False
         self.prompt_colour      = 'yellow'  # Colour of the short prompt
         self.alias: Dict[str, str] = {}     # Command aliases
         self.params: Dict[str, Any] = {}     # Params we can use in prompt
@@ -238,8 +239,9 @@ class RemoteCmd(cmd.Cmd):
             readline.read_history_file(self.history_file)
 
         # Set the completion functions
-        # TODO: Wrap this in complete_default
+        # TODO: Wrap this in complete_default - reuse self.remote_cmds
         fname = self.complete_filename
+        self.complete_fs        = fname
         self.complete_ls        = fname
         self.complete_cat       = fname
         self.complete_edit      = fname
@@ -259,9 +261,6 @@ class RemoteCmd(cmd.Cmd):
         fname = self.complete_local_directory
         self.complete_mount     = fname
         self.complete_lcd       = fname
-
-    def save_history(self) -> None:
-        readline.write_history_file(self.history_file)
 
     def load_rc_file(self, file: str) -> bool:
         'Read commands from "file" first in home folder then local folder.'
@@ -326,6 +325,26 @@ class RemoteCmd(cmd.Cmd):
                         spaces[len(f.name):], sep='',
                         end=('' if n % cols and n < len(files) else '\n'))
 
+    def do_fs(self, args: List[str]) -> None:
+        """
+        Emulate the mpremote command line argument filesystem operations:
+            %fs [cat,ls,cp,rm,mkdir.rmdir] [args,...]"""
+        if not args:
+            print("%fs: No fs command provided.")
+            return
+        fs_cmd = {
+            'cat':      self.do_cat,
+            'ls':       self.do_ls,
+            'cp':       self.do_cp,
+            'rm':       self.do_rm,
+            'mkdir':    self.do_mkdir,
+            'rmdir':    self.do_rmdir,
+        }.get(args[0])
+        if not fs_cmd:
+            print('%fs: Invalid fs command:', args[0])
+            return
+        fs_cmd(args[1:])
+
     def do_ls(self, args: List[str]) -> None:
         """
         List files on the board:
@@ -338,6 +357,7 @@ class RemoteCmd(cmd.Cmd):
         filelist = list(self.board.ls(args, opts))
         linebreak = ''
         for i, (dir, files) in enumerate(filelist):
+            # TODO: try: if dir and len(....
             if i > 0 and len(filelist) > 2:     # Print the directory name
                 print('{}{}:'.format(linebreak, self.colour.dir(dir)))
             if dir or files:
@@ -448,7 +468,7 @@ class RemoteCmd(cmd.Cmd):
     # Directory commands
     def do_cd(self, args: List[str]) -> None:
         """
-        Change the current direcory on the board (with os.setpwd()):
+        Change the current directory on the board (with os.setpwd()):
             %cd /lib"""
         arg = args[0] if args else '/'
         self.board.cd(arg)
@@ -492,10 +512,10 @@ class RemoteCmd(cmd.Cmd):
     def do_exec(self, args: List[str]) -> None:
         """
         Exec the python code on the board, eg.:
-            %exec print(34 * 35)
+            %exec [--no-follow] print(34 * 35)
         "\\n" will be substituted with the end-of-line character, eg:
             %exec 'print("one")\\nprint("two")' """
-        self.board.exec(' '.join(args).replace('\\n', '\n'))
+        self.board.exec(' '.join(args).replace('\\n', '\n'), follow=True)
 
     def do_eval(self, args: List[str]) -> None:
         """
@@ -506,7 +526,11 @@ class RemoteCmd(cmd.Cmd):
     def do_run(self, args: List[str]) -> None:
         """
         Load and run local python files onto the board:
-            %run file1.py [file2.py ...]"""
+            %run [--no-follow] file1.py [file2.py ...]"""
+        follow = True
+        if args and args[0] == '--no-follow':
+            args = args[1:]
+            follow = False
         for arg in args:
             try:
                 with open(arg) as f:
@@ -514,7 +538,7 @@ class RemoteCmd(cmd.Cmd):
             except OSError as err:
                 print(OSError, err)
             else:
-                self.board.exec(buf)
+                self.board.exec(buf, follow=follow)
 
     def do_echo(self, args: List[str]) -> None:
         """
@@ -627,7 +651,7 @@ class RemoteCmd(cmd.Cmd):
         if args and len(args) == 2 and args[0] == 'cd':
             os.chdir(args[1])
         else:
-            os.system(' '.join(args))
+            os.system(' '.join(args))   # TODO: Use interactive shell
 
     def do_alias(self, args: List[str]) -> None:
         """
@@ -669,7 +693,7 @@ class RemoteCmd(cmd.Cmd):
                     self.prompt = backup
                 if catcher.exception:   # Restore the old prompt_fmt
                     self.prompt_fmt = saved
-            elif key == 'promptcolour':
+            elif key in ['promptcolour', 'promptcolor']:
                 ansi = self.colour.ansi(value)
                 if ansi[0] == '\x1b':
                     self.prompt_colour = value
@@ -683,7 +707,7 @@ class RemoteCmd(cmd.Cmd):
             elif key == 'name':
                 self.load_board_params()
                 self.names[self.params['unique_id']] = value
-            elif key == 'lscolour':
+            elif key in ['lscolour', 'lscolor']:
                 d: Dict[str, str] = {}
                 d.update(json.loads(value))
                 for k, v in d.items():
@@ -715,12 +739,14 @@ class RemoteCmd(cmd.Cmd):
             %set prompt='{cyan}{name}@{dev}-{sysname}-({free}){blue}{pwd}> '
             %set prompt='{cyan}{name}@{dev}({free}){green}{lcd1}:{blue}{pwd}> '
             %set promptcolour=yellow
+            %set promptcolor=cyan
         Set and save the name of the current board (for use in prompt):
             %set name=node05
         Update the mapping of all device unique_ids and names (as json string):
             %set names='{"ab:cd:ef:01:23:45": "node01", ...}'
         Add extra colour specs (as json) for file listing with "ls":
             %set lscolour='{"di": "bold-blue", "*.py": "bold-cyan"}'
+            %set lscolor='{"*.pyc": "magenta"}'
         """))
         print((
             '\nThese options will be automatically saved in ~/{0}\n'
@@ -747,6 +773,52 @@ class RemoteCmd(cmd.Cmd):
             {lcdn}: last n parts of local working directory
             {name}: name of current board or {id} if name is not set"""))
 
+    def default(self, line: str) -> bool:
+        'Process any commandlines not matching builtin commands.'
+        if not self.multi_cmd_mode and line.strip() == "%":
+            # User typed '%%': Enter command line mode
+            self.write(
+                b'Enter magic commands (try "help" for a list)\n'
+                b'Type "quit" or ctrl-D to return to micropython:\n')
+            self.multi_cmd_mode = True
+            return not self.multi_cmd_mode
+        elif (self.multi_cmd_mode and
+                line.strip() in ('exit', 'quit', 'EOF')):
+            # End command line mode - typed "quit", "exit" or ctrl-D
+            self.prompt = self.base_prompt
+            self.multi_cmd_mode = False
+            if line.strip() == 'EOF':
+                print()
+            return not self.multi_cmd_mode
+
+        # Check for any aliases...
+        args = list(self.split(line))
+        if args and args[0] in self.alias:
+            cmd, *args = args
+            alias = self.alias[cmd]
+
+            args = list(self.glob(cmd, args))  # Support globbing
+            # Expand the alias: can include format specifiers: {}, {3}, ...
+            line = alias.format(*args)
+            # Set of arg indices consumed by fmt specifiers: {}, {:23}, ...
+            used = set(range(len(re.findall(r'{(:[^}]+)?}', alias))))
+            # Add args consumed by {3}, {6:>23}, ...
+            used.update(
+                int(n) for n in re.findall(r'{([0-9]+):?[^}]*}', alias))
+            # Add any unused args to the end of the line
+            line = ' '.join((
+                line,
+                ' '.join(arg for n, arg in enumerate(args) if n not in used)))
+
+            print(line)
+            self.onecmd(line)
+            return not self.multi_cmd_mode
+        elif not args:
+            return not self.multi_cmd_mode        # Ignore comments
+
+        self.write('Unknown command: "{}"\r\n'.format(line.strip()).encode())
+        return not self.multi_cmd_mode
+
     def do_help(self, args: List[str]) -> None:  # type: ignore
         'List available commands with "help" or detailed help with "help cmd".'
         # Need to override Cmd.do_help since we abuse the args parameter
@@ -768,6 +840,52 @@ class RemoteCmd(cmd.Cmd):
             self.stdout.write("%s\n" % str(self.nohelp % (arg,)))
             return
         func()
+
+    def set_prompt(self) -> None:
+        "Set the prompt using the prompt_fmt string."
+        self.load_board_params()
+        pwd: str
+        alloc: int
+        free: int
+        pwd, alloc, free = self.board.eval('_helper.pr()')
+
+        alloc, free = int(alloc), int(free)
+        free_pc = round(100 * free / (alloc + free))
+        heap_used = str(max(0, self.params.get('free', free) - free)).rjust(5)
+
+        # Update some dynamic info for the prompt
+        self.params['pwd']       = pwd
+        self.params['heap_used'] = heap_used
+        self.params['free']      = free
+        self.params['free_pc']   = free_pc
+        self.params['lcd']       = os.getcwd()
+        self.params['lcd3']      = '/'.join(os.getcwd().rsplit('/', 3)[1:])
+        self.params['lcd2']      = '/'.join(os.getcwd().rsplit('/', 2)[1:])
+        self.params['lcd1']      = '/'.join(os.getcwd().rsplit('/', 1)[1:])
+        self.params['name']      = self.names.get(    # Look up name for board
+            self.params['unique_id'], self.params['id'])
+
+        prompt_colours = {
+            'free':     ('green' if free_pc > 50 else
+                         'yellow' if free_pc > 25 else
+                         'red'),
+            'free_pc':  ('green' if free_pc > 50 else
+                         'yellow' if free_pc > 25 else
+                         'red'),
+        }
+        prompt_map = {
+            k: self.colour(prompt_colours.get(k, ''), v)
+            for k, v in self.params.items()}
+
+        self.prompt = (
+            # Make GNU readline calculate the length of the colour prompt
+            # correctly. See readline.rl_expand_prompt() docs.
+            re.sub(
+                '(\x1b\\[[0-9;]+m)', '\x01\\1\x02',
+                # Make colour reset act like a colour stack
+                self.colour.colour_stack(
+                    # Build the prompt from prompt_fmt (set with %set cmd)
+                    self.prompt_fmt.format_map(prompt_map))))
 
     # File and directory completion functions
     def complete_filename(
@@ -819,18 +937,22 @@ class RemoteCmd(cmd.Cmd):
         'Initialise the board parameters - used in the longform prompt'
         if 'id' in self.params:
             return
-        self.params = {}
-        self.params['device'] = self.board.pyb.device_name
-        self.params['dev'] = re.sub(
-            r'^/dev/tty(.).*(.)$', r'\1\2', self.params['device'].lower())
+        # Load these parameters only once for each board
+        self.params = {
+            'device':       self.board.pyb.device_name,
+            'dev':          re.sub(r'^/dev/tty(.).*(.)$',
+                                   r'\1\2',
+                                   self.board.pyb.device_name.lower()),
+            'platform':     self.board.eval('from sys import platform;'
+                                            'print(repr(platform))'),
+            'unique_id':    self.board.eval('from machine import unique_id;'
+                                            'print(repr(unique_id()))'
+                                            ).hex(':'),
+        }
         self.params.update(      # Update the board params from uos.uname()
             self.board.eval('print("dict{}".format(uos.uname()))'))
-        self.params['platform'], self.params['unique_id'] = (
-            self.board.eval(
-                'from machine import unique_id;from sys import platform\n'
-                'print("({}, {})".format(repr(platform), unique_id()))'))
-        self.params['unique_id'] = self.params['unique_id'].hex(':')
         self.params['id'] = self.params['unique_id'][-8:]  # Last 3 octets
+        # Add the ansi colour names
         self.params.update(
             {c: self.colour.ansi(c) for c in self.colour.colour})
 
@@ -890,152 +1012,66 @@ class RemoteCmd(cmd.Cmd):
         if not self.rcfile_loaded:
             self.load_rc_file(RC_FILE)
             self.rcfile_loaded = True
-        if self.single_cmd_mode:
+        if not self.multi_cmd_mode:
             self.prompt = \
                 self.colour(self.prompt_colour, self.base_prompt) + '%'
 
     def postloop(self) -> None:
-        print(self.base_prompt, end='')
-
-    def precmd(self, line: str) -> str:
-        if isinstance(line, list):
-            return line
-        if not self.single_cmd_mode and line and line[0] == "%":
-            line = line[1:]     # Discard any leading '%' in multi-cmd mode
-            readline.replace_history_item(1, line)
-
-        return line
-
-    def postcmd(self, stop: Any, line: str) -> bool:
-        if not self.single_cmd_mode:
-            self.set_prompt()       # Setup our complicated prompt
-        # Exit if we are in single command mode and no commands in the queue
-        return self.single_cmd_mode and not self.cmdqueue
+        print(self.base_prompt, end='')  # Re-print the micropython prompt
 
     def onecmd(self, line: str) -> bool:
         """Override the default Cmd.onecmd()."""
         if isinstance(line, list):
             # List of str is pushed back onto cmdqueue in self.split()
             cmd, *args = line
-        else:
+        else:  # line is a string
+            if self.multi_cmd_mode:  # Discard leading '%' in multi-cmd mode
+                if line and line[0] == "%":
+                    line = line[1:]
+                    readline.replace_history_item(1, line)
+            readline.write_history_file(self.history_file)
+
             # A command line read from the input
             cmd, arg, line = self.parseline(line)
-            try:
+            try:  # Process with split() first to handle ';' separator.
                 args = list(self.split(arg)) if arg else []
             except ValueError as err:
                 print('%magic command error:', err)
                 return False
-        if not line:
-            return self.emptyline()
-        if not cmd:
-            return self.default(line)
+            if not line:
+                return self.emptyline()
+            if not cmd:
+                return self.default(line)
+
+        # Perform mpremote command expansion
+        args = list(self.glob(cmd, args))
+        allargs = [cmd, *args]
+        mpremote_do_command_expansion(allargs)
+        print(allargs)
+        cmd, *args = allargs
+
         self.lastcmd = ''
-        func = getattr(self, 'do_' + cmd, None)
+        func: Callable[[List[str]], bool] = getattr(self, 'do_' + cmd, None)
         if func:
-            func(list(self.glob(cmd, args)))
+            return func(args)
         else:
-            return self.default(line)
-        return False
+            return self.default(' '.join(allargs))
+
+    def postcmd(self, stop: Any, line: str) -> bool:
+        if self.multi_cmd_mode:
+            self.set_prompt()       # Setup our complicated prompt
+        # Exit if we are in single command mode and no commands in the queue
+        return not self.multi_cmd_mode and not self.cmdqueue
 
     def cmdloop(self, intro: Optional[str] = None) -> None:
-        'Add an exception catcher to the Cmd.cmdloop().'
+        'Add a raw_repl and exception catcher to the Cmd.cmdloop().'
         while True:
-            with catcher(self.write):
+            with raw_repl(self.board.pyb, self.write,
+                          soft_reset=False, silent=False):
                 super().cmdloop(intro)
             if type(catcher.exception) != KeyboardInterrupt:
                 break
             print()
 
-    def emptyline(self) -> bool:
-        return True    # Else empty lines repeat last command
-
-    def default(self, line: str) -> bool:
-        if self.single_cmd_mode and line.strip() == "%":
-            # User typed '%%': Enter command line mode
-            self.prompt = "%% "
-            self.write(
-                b'Enter magic commands (try "help" for a list)\n'
-                b'Type "quit" or ctrl-D to return to micropython:\n')
-            self.single_cmd_mode = False
-            return True
-        elif (not self.single_cmd_mode and
-                line.strip() in ('exit', 'quit', 'EOF')):
-            # End command line mode - typed "quit", "exit" or ctrl-D
-            self.prompt = self.base_prompt
-            self.single_cmd_mode = True
-            if line.strip() == 'EOF':
-                print()
-            return True
-
-        # Check for any aliases...
-        args = list(self.split(line))
-        if args and args[0] in self.alias:
-            cmd, *args = args
-            alias = self.alias[cmd]
-
-            # Expand the alias: can include format specifiers: {}, {3}, ...
-            line = alias.format(*args)
-            # Set of arg indices consumed by fmt specifiers: {}, {:23}, ...
-            used = set(range(len(re.findall(r'{(:[^}]+)?}', alias))))
-            # Add args consumed by {3}, {6:>23}, ...
-            used.update(
-                int(n) for n in re.findall(r'{([0-9]+):?[^}]*}', alias))
-            # Add any unused args to the end of the line
-            line = ' '.join((
-                line,
-                ' '.join(arg for n, arg in enumerate(args) if n not in used)))
-
-            print(line)
-            self.onecmd(line)
-            return True
-        elif not args:
-            return True         # Ignore comments
-
-        self.write('Unknown command: "{}"\r\n'.format(line.strip()).encode())
-        return True
-
-    def set_prompt(self) -> None:
-        "Set the prompt using the prompt_fmt string."
-        self.load_board_params()
-        pwd: str
-        alloc: int
-        free: int
-        pwd, alloc, free = self.board.eval('_helper.pr()')
-
-        alloc, free = int(alloc), int(free)
-        free_pc = round(100 * free / (alloc + free))
-        heap_used = str(max(0, self.params.get('free', free) - free)).rjust(5)
-
-        # Update some dynamic info for the prompt
-        self.params['pwd']       = pwd
-        self.params['heap_used'] = heap_used
-        self.params['free']      = free
-        self.params['free_pc']   = free_pc
-        self.params['lcd']       = os.getcwd()
-        self.params['lcd3']      = '/'.join(os.getcwd().rsplit('/', 3)[1:])
-        self.params['lcd2']      = '/'.join(os.getcwd().rsplit('/', 2)[1:])
-        self.params['lcd1']      = '/'.join(os.getcwd().rsplit('/', 1)[1:])
-        self.params['name']      = self.names.get(    # Look up name for board
-            self.params['unique_id'], self.params['id'])
-
-        prompt_colours = {
-            'free':     ('green' if free_pc > 50 else
-                         'yellow' if free_pc > 25 else
-                         'red'),
-            'free_pc':  ('green' if free_pc > 50 else
-                         'yellow' if free_pc > 25 else
-                         'red'),
-        }
-        prompt_map = {
-            k: self.colour(prompt_colours.get(k, ''), v)
-            for k, v in self.params.items()}
-
-        self.prompt = (
-            # Make GNU readline calculate the length of the colour prompt
-            # correctly. See readline.rl_expand_prompt() docs.
-            re.sub(
-                '(\x1b\\[[0-9;]+m)', '\x01\\1\x02',
-                # Make colour reset act like a colour stack
-                self.colour.colour_stack(
-                    # Build the prompt from prompt_fmt (set with %set cmd)
-                    self.prompt_fmt.format_map(prompt_map))))
+    def emptyline(self) -> bool:   # Else empty lines repeat last command
+        return not self.multi_cmd_mode
