@@ -3,7 +3,6 @@
 # vscode-fold=1
 
 
-
 import select, re, sys, time
 from typing import (Union, Callable)
 from serial import Serial
@@ -113,7 +112,6 @@ def my_do_repl_main_loop(
                     and (beginning_of_line or
                          cursor_column(console_in, console_out_write) == 5)):
                 console_out_write(b"\x1b[2K")  # Clear other chars on line
-                pyb.serial.write(c)
                 console_in.exit()
                 with raw_repl(pyb, console_out_write, soft_reset=False):
                     local.cmdloop()
@@ -124,10 +122,8 @@ def my_do_repl_main_loop(
                     and (beginning_of_line or
                          cursor_column(console_in, console_out_write) == 5)):
                 console_out_write(b"\x1b[2K")  # Clear other chars on line
-                pyb.serial.write(c)
                 console_in.exit()
-                with raw_repl(pyb, console_out_write, soft_reset=False):
-                    remote.cmdloop()
+                remote.cmdloop()
                 console_in.enter()
                 beginning_of_line = True
             elif c == b"\x0d":      # ctrl-m: carriage return
@@ -165,7 +161,6 @@ def my_do_repl_main_loop(
                         at_prompt = True
                 else:
                     prompt_char_count = 0
-    remote.save_history()
 
 
 # Override the mpremote main repl loop!!!
