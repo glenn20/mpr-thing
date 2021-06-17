@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import (
     Any, Dict, Iterable, Callable, Optional, List, Tuple)
 
-from mpremote.main import do_command_expansion as mpremote_do_command_expansion
+import mpremote.main
 
 from .catcher import catcher, raw_repl
 from .board import RemotePath, Board
@@ -893,6 +893,9 @@ class RemoteCmd(cmd.Cmd):
         self.board.load_hooks()
         self.hooks_loaded = True
         self.board.exec('_helper.localtime_offset = {}'.format(-time.timezone))
+        # Remove the mpremote aliases which override mpr-thing commands
+        for k in ['cat', 'ls', 'cp', 'rm', 'mkdir', 'rmdir', 'df']:
+            del(mpremote.main._command_expansions[k])
 
     def load_board_params(self) -> None:
         'Initialise the board parameters - used in the longform prompt'
@@ -1000,7 +1003,7 @@ class RemoteCmd(cmd.Cmd):
         args = split_semicolons(args)   # Alias may expand to include ';'
 
         # Expand mpremote commandline macros
-        mpremote_do_command_expansion(args)
+        mpremote.main.do_command_expansion(args)
         for i, arg in enumerate(args):
             # Insert ';'s if necessary to split up run-together commands
             # Eg: exec "x=2" eval "x**2" -> exec "x=2" ; eval "x**2"
