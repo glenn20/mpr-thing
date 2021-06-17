@@ -210,7 +210,8 @@ class RemoteCmd(cmd.Cmd):
         'Further help is available for the following commands:\n'
         '======================================================')
     ruler = ''       # Cmd.ruler is broken if doc_header is multi-line
-    remote_cmds = (  # Cmds for which glob (*) expansion happens on the board
+    # Cmds for which glob (*) expansion and completion happens on the board
+    remote_cmds = (
         'fs', 'ls', 'cat', 'edit', 'touch', 'mv', 'cp', 'rm', 'get',
         'cd', 'mkdir', 'rmdir', 'echo')
 
@@ -791,29 +792,7 @@ class RemoteCmd(cmd.Cmd):
                 print()
             return not self.multi_cmd_mode
 
-        # Check for any aliases...
-        args = list(self.split(line))
-        if args and args[0] in self.alias:
-            cmd, *args = args
-            alias = self.alias[cmd]
-
-            args = list(self.glob(cmd, args))  # Support globbing
-            # Expand the alias: can include format specifiers: {}, {3}, ...
-            line = alias.format(*args)
-            # Set of arg indices consumed by fmt specifiers: {}, {:23}, ...
-            used = set(range(len(re.findall(r'{(:[^}]+)?}', alias))))
-            # Add args consumed by {3}, {6:>23}, ...
-            used.update(
-                int(n) for n in re.findall(r'{([0-9]+):?[^}]*}', alias))
-            # Add any unused args to the end of the line
-            line = ' '.join((
-                line,
-                ' '.join(arg for n, arg in enumerate(args) if n not in used)))
-
-            print(line)
-            self.onecmd(line)
-            return not self.multi_cmd_mode
-        elif not args:
+        if line.strip().startswith('#'):
             return not self.multi_cmd_mode        # Ignore comments
 
         self.write('Unknown command: "{}"\r\n'.format(line.strip()).encode())
@@ -968,13 +947,15 @@ class RemoteCmd(cmd.Cmd):
             return (f for f in [])  # type: ignore
         files = self.board.ls_dir(dir)
         return ((                   # Just return the generator
-            str(f) for f in files
+            str(f)
+            for f in files
             if str(f)[0] != '.' and fnmatch.fnmatch(str(f), word))
             if files else [])
 
-    def glob(self, cmd: str, args: List[str]) -> Iterable[str]:
-        remote_glob = cmd in self.remote_cmds
-        for arg in args:
+    def glob(self, args: List[str]) -> Iterable[str]:
+        remote_glob = args[0] in self.remote_cmds
+        yield args[0]
+        for arg in args[1:]:
             if arg:
                 at_least_one = False
                 for f in (self.glob_remote(arg) if remote_glob else
@@ -984,22 +965,65 @@ class RemoteCmd(cmd.Cmd):
                 if not at_least_one:
                     yield arg   # if no match - just return the glob pattern
 
+    def expand_alias(self, args: List[str]) -> List[str]:
+        if not args or args[0] not in self.alias:
+            return args
+
+        alias = self.alias[args.pop(0)]
+
+        # Set of arg indices to be consumed by fmt specifiers: {}, {:23}, ...
+        used = set(range(len(re.findall(r'{(:[^}]+)?}', alias))))
+        # Add args consumed by {3}, {6:>23}, ...
+        used.update(
+            int(n) for n in re.findall(r'{([0-9]+):?[^}]*}', alias))
+
+        # Expand the alias: can include format specifiers: {}, {3}, ...
+        new_args = alias.format(*args).split()
+        # Add any unused args to the end of the line
+        new_args.extend(arg for n, arg in enumerate(args) if n not in used)
+
+        print(new_args)
+        return new_args
+
     def split(self, line: str) -> List[str]:
         'Split the command line into tokens and expand any glob patterns.'
         # punctuation_chars=True ensures semicolons can split commands
         lex = shlex.shlex(line, None, True, True)
         lex.wordchars += ':'
-        allargs = list(lex)
+        args = list(lex)  # List of all arguments, including cmd
+        if not args:
+            return args
 
-        # Semicolons separate commands: make a list of args for each sub-cmd
-        # [[arg1, ...], [arg1,...], ...]
-        argslist = (
-            list(l) for key, l in
-            itertools.groupby(allargs, lambda arg: arg == ';') if not key)
-        # If first arg was ';' use empty args, else use the first in argslist
-        args = next(argslist) if allargs and allargs[0] != ';' else []
-        # Push the rest of the args back onto the cmd queue
-        self.cmdqueue.extend(list(argslist))  # type: ignore
+        def split_semicolons(args: List[str]) -> List[str]:
+            # Split argslist by semicolons
+            argslist = (  # [[arg1, ...], [arg1,...], ...]
+                list(l) for key, l in
+                itertools.groupby(args, lambda arg: arg == ';') if not key)
+            # Get args for the first subcommand
+            args = next(argslist) if args and args[0] != ';' else []
+            # Push the rest of the args back onto the cmd queue
+            self.cmdqueue[0:0] = list(argslist)  # type: ignore
+            return args
+
+        args = split_semicolons(args)
+
+        # Expand any aliases
+        args = self.expand_alias(args)
+        args = split_semicolons(args)
+
+        # Expand mpremote commandline macros
+        mpremote_do_command_expansion(args)
+        for i, arg in enumerate(args):
+            if arg in [
+                    'connect', 'disconnect', 'mount', 'eval',
+                    'exec', 'run', 'fs']:
+                if i > 0 and args[i - 1] != ';':
+                    args.insert(i, ';')
+        args = split_semicolons(args)
+
+        # Expand any glob patterns on the command line
+        args = list(self.glob(args))
+
         return args
 
     # Cmd control functions
@@ -1023,7 +1047,7 @@ class RemoteCmd(cmd.Cmd):
         """Override the default Cmd.onecmd()."""
         if isinstance(line, list):
             # List of str is pushed back onto cmdqueue in self.split()
-            cmd, *args = line
+            cmd, *args = list(self.glob(line))
         else:  # line is a string
             if self.multi_cmd_mode:  # Discard leading '%' in multi-cmd mode
                 if line and line[0] == "%":
@@ -1034,7 +1058,8 @@ class RemoteCmd(cmd.Cmd):
             # A command line read from the input
             cmd, arg, line = self.parseline(line)
             try:  # Process with split() first to handle ';' separator.
-                args = list(self.split(arg)) if arg else []
+                args = list(self.split(line))
+                cmd, *args = args if args else ['']
             except ValueError as err:
                 print('%magic command error:', err)
                 return False
@@ -1043,19 +1068,12 @@ class RemoteCmd(cmd.Cmd):
             if not cmd:
                 return self.default(line)
 
-        # Perform mpremote command expansion
-        args = list(self.glob(cmd, args))
-        allargs = [cmd, *args]
-        mpremote_do_command_expansion(allargs)
-        print(allargs)
-        cmd, *args = allargs
-
         self.lastcmd = ''
         func: Callable[[List[str]], bool] = getattr(self, 'do_' + cmd, None)
         if func:
             return func(args)
         else:
-            return self.default(' '.join(allargs))
+            return self.default(' '.join([cmd, *args]))
 
     def postcmd(self, stop: Any, line: str) -> bool:
         if self.multi_cmd_mode:
