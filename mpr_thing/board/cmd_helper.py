@@ -36,7 +36,9 @@ class _MagicHelper:
     # Using a fixed buffer reduces heap allocation
     _buf = bytearray(1024)
 
-    def cp_file(self, f1, f2):
+    def cp_file(self, f1, f2, opts):
+        if 'v' in opts: print(f2)
+        if 'n' in opts: return
         f1, f2 = open(f1, "rb"), open(f2, "wb")
         n = f1.readinto(self._buf)
         while n > 0:
@@ -44,28 +46,27 @@ class _MagicHelper:
             n = f1.readinto(self._buf)
         f1.close(); f2.close()
 
-    def cp_dir(self, dir, dest, r=0, v=False):
-        if r <= 0:
-            print('Can not copy directory', dir, ': Increase recursion')
+    def cp_dir(self, dir, dest, opts):
+        if 'r' not in opts:
+            print('Can not copy directory', dir, ': Use "%cp -r"')
             return
         dest = self.path(dest, self.basename(dir))
         try:
-            uos.mkdir(dest)
-            if v: print(dest)
+            if 'v' in opts: print(dest)
+            if 'n' not in opts: uos.mkdir(dest)
         except:
             if not self.is_dir(uos.stat(dest)[0]):
                 print('Can not overwrite non-directory',
                     dest, 'with directory', dir)
                 return
         for f, m, *_ in uos.ilistdir(dir):
-            if self.is_dir(m) and r > 0:
-                self.cp_dir(self.path(dir, f), dest, r - 1, v)
+            if self.is_dir(m) and 'r' in opts:
+                self.cp_dir(self.path(dir, f), dest, opts)
             else:
                 f1, f2 = self.path(dir, f), self.path(dest, f)
-                if v: print(f2)
-                self.cp_file(f1, f2)
+                self.cp_file(f1, f2, opts)
 
-    def cp(self, files, dest, r=0, v=False):
+    def cp(self, files, dest, opts):
         try:
             dest_m = uos.stat(dest)[0]
         except OSError:
@@ -76,57 +77,47 @@ class _MagicHelper:
         for f in files:
             if self.is_dir(uos.stat(f)[0]):
                 if f != dest:
-                    self.cp_dir(f, dest, r, v)
+                    self.cp_dir(f, dest, opts)
                 else:
                     print('%cp: Skipping: source is same as dest:', files[0])
             else:
                 f2 = self.path(dest, self.basename(f))
-                if v: print(f2)
-                self.cp_file(f, f2)
+                self.cp_file(f, f2, opts)
 
-    def mv(self, files, dest, v=False):
+    def mv(self, files, dest, opts):
         try:
             dir_dest = self.is_dir(uos.stat(dest)[0])
         except OSError:
             dir_dest = False
         if len(files) == 1 and not dir_dest:
-            if v: print(dest)
-            uos.rename(files[0], dest)
+            if 'v' in opts: print(dest)
+            if 'n' not in opts: uos.rename(files[0], dest)
             return
         elif not dir_dest:
             print("Destination must be a directory.")
             return
         for f in files:
             f2 = self.path(dest, self.basename(f))
-            if v: print(f2)
-            uos.rename(f, f2)
+            if 'v' in opts: print(f2)
+            if 'n' not in opts: uos.rename(f, f2)
 
     # TODO: see if chdir through tree reduces heap allocation
-    def rm(self, files, r=0, v=False):
+    def rm(self, files, opts):
         for f in files:
-            try:
-                if v: print(f)
-                uos.remove(f)
-                continue
-            except OSError:
-                pass
-            try:
-                m = uos.stat(f)[0]
-            except OSError:
-                print('No such file:', f)
-                break
-            if self.is_dir(m):
-                if r > 0:
-                    self.rm(
-                        (self.path(f, i[0]) for i in uos.ilistdir(f)),
-                        r-1, v)
-                    if v: print(f)
-                    uos.rmdir(f)
-                else:
-                    print('Can not remove directory "{}": Increase recursion'
-                        .format(f))
+            try: m = uos.stat(f)[0]
+            except OSError: print('No such file:', f); break
+            if not self.is_dir(m):
+                if 'v' in opts: print(f)
+                if 'n' not in opts: uos.remove(f)
             else:
-                print('Unable to remove:', f)
+                if 'r' in opts:
+                    self.rm(
+                        (self.path(f, i[0]) for i in uos.ilistdir(f)), opts)
+                    if 'v' in opts: print(f)
+                    if 'n' not in opts: uos.rmdir(f)
+                else:
+                    print('Can not remove directory "{}": Use "%rm -r"'
+                        .format(f))
 
     import gc
 

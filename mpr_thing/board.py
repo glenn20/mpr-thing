@@ -146,10 +146,10 @@ class Board:
             ) -> None:
         if isinstance(filenames, str):
             filenames = [filenames]
-        self.exec('_helper.mv({}, "{}", {})'.format(
+        self.exec('_helper.mv({},"{}","{}")'.format(
             [f.rstrip('/') if f != '/' else f for f in filenames],
             dest.rstrip('/') if dest != '/' else dest,
-            'v' in opts))
+            opts))
 
     def rm(
             self,
@@ -158,10 +158,9 @@ class Board:
             ) -> None:
         if isinstance(filenames, str):
             filenames = [filenames]
-        self.exec('_helper.rm({}, {}, {})'.format(
+        self.exec('_helper.rm({},"{}")'.format(
             [f.rstrip('/') if f != '/' else f for f in filenames],
-            self.default_depth if 'r' in opts else 0,
-            'v' in opts))
+            opts))
 
     def cd(self, filename: str) -> None:
         self.exec('uos.chdir({})'.format(repr(filename)))
@@ -267,8 +266,6 @@ class Board:
             opts:       str
             ) -> None:
         'Copy files and directories on the micropython board.'
-        verbose = 'v' in opts
-        depth = self.default_depth if 'r' in opts else 0
         if isinstance(filenames, str):
             filenames = [filenames]
         files = list(self.ls_files([*filenames, dest]))
@@ -281,21 +278,22 @@ class Board:
                 return
             if not f.is_dir() and not dest_f.is_dir():
                 # cp file1 file2
-                if verbose: print(str(dest))
-                self.exec(f'_helper.cp_file("{str(f)}", "{str(dest)}")')
+                self.exec(
+                    '_helper.cp_file("{}","{}","{}")'.format(
+                        str(f), str(dest_f), opts))
                 return
             elif f.is_dir() and not dest_f.exists():
                 # cp dir1 dir2 (where dir2 does not exist)
-                if verbose: print(str(dest))
-                self.mkdir(str(dest))
+                if 'v' in opts: print(str(dest))
+                if 'n' not in opts: self.mkdir(str(dest))
                 self.exec(
-                    '_helper.cp_dir("{}", "{}", {}, {})'.format(
+                    '_helper.cp_dir("{}","{}","{}")'.format(
                         str(f) + '/.',  # Ugly hack to make it work
-                        str(dest_f), depth, verbose))
+                        str(dest_f), opts))
                 return
         self.exec(
-            '_helper.cp({}, "{}", {}, {})'.format(
-                [str(f) for f in files], str(dest_f), depth, verbose))
+            '_helper.cp({},"{}","{}")'.format(
+                [str(f) for f in files], str(dest_f), opts))
 
     def get_file(
             self,
