@@ -9,22 +9,25 @@
 
 import uos, gc
 
-def path(a, b):
-    return '/'.join((a, b))
-
-def is_dir(mode):
-    return ((mode & 0x4000) != 0)
-
-def basename(f):
-    return f[f.rfind('/')+1:]
-
 class _MagicHelper:
+
+    @staticmethod
+    def path(a, b):
+        return '/'.join((a, b))
+
+    @staticmethod
+    def is_dir(mode):
+        return ((mode & 0x4000) != 0)
+
+    @staticmethod
+    def basename(f):
+        return f[f.rfind('/')+1:]
 
     def ls(self, dir, long):
         print("[", end="")
         for f in uos.ilistdir(dir):
             if long:
-                s = uos.stat(path(dir, f[0]))
+                s = uos.stat(self.path(dir, f[0]))
                 print('("',f[0],'",',s[0],',',s[6],',',s[8],')',sep="",end=",")
             else:
                 print('("',f[0],'",',f[1],')',sep="",end=",")
@@ -45,51 +48,45 @@ class _MagicHelper:
         if r <= 0:
             print('Can not copy directory', dir, ': Increase recursion')
             return
-        dest = path(dest, basename(dir))
+        dest = self.path(dest, self.basename(dir))
         try:
             uos.mkdir(dest)
             if v: print(dest)
         except:
-            if not is_dir(uos.stat(dest)[0]):
+            if not self.is_dir(uos.stat(dest)[0]):
                 print('Can not overwrite non-directory',
                     dest, 'with directory', dir)
                 return
         for f, m, *_ in uos.ilistdir(dir):
-            if is_dir(m) and r > 0:
-                self.cp_dir(path(dir, f), dest, r - 1, v)
+            if self.is_dir(m) and r > 0:
+                self.cp_dir(self.path(dir, f), dest, r - 1, v)
             else:
-                f1, f2 = path(dir, f), path(dest, f)
+                f1, f2 = self.path(dir, f), self.path(dest, f)
                 if v: print(f2)
                 self.cp_file(f1, f2)
 
     def cp(self, files, dest, r=0, v=False):
         try:
-            m = uos.stat(dest)[0]
+            dest_m = uos.stat(dest)[0]
         except OSError:
-            m = 0
-        if len(files) == 1 and not is_dir(m):
-            if files[0] == dest:
-                print('%cp: Skipping: source is same as dest:', files[0])
-            if v: print(files[0])
-            self.cp_file(files[0], dest)
-            return
-        elif not is_dir(m):
+            dest_m = 0
+        if not self.is_dir(dest_m):
             print("Destination must be a directory.")
             return
         for f in files:
-            if is_dir(uos.stat(f)[0]):
+            if self.is_dir(uos.stat(f)[0]):
                 if f != dest:
                     self.cp_dir(f, dest, r, v)
                 else:
                     print('%cp: Skipping: source is same as dest:', files[0])
             else:
-                f2 = path(dest, basename(f))
+                f2 = self.path(dest, self.basename(f))
                 if v: print(f2)
                 self.cp_file(f, f2)
 
     def mv(self, files, dest, v=False):
         try:
-            dir_dest = is_dir(uos.stat(dest)[0])
+            dir_dest = self.is_dir(uos.stat(dest)[0])
         except OSError:
             dir_dest = False
         if len(files) == 1 and not dir_dest:
@@ -100,7 +97,7 @@ class _MagicHelper:
             print("Destination must be a directory.")
             return
         for f in files:
-            f2 = path(dest, basename(f))
+            f2 = self.path(dest, self.basename(f))
             if v: print(f2)
             uos.rename(f, f2)
 
@@ -118,9 +115,11 @@ class _MagicHelper:
             except OSError:
                 print('No such file:', f)
                 break
-            if is_dir(m):
+            if self.is_dir(m):
                 if r > 0:
-                    self.rm((path(f, i[0]) for i in uos.ilistdir(f)), r-1, v)
+                    self.rm(
+                        (self.path(f, i[0]) for i in uos.ilistdir(f)),
+                        r-1, v)
                     if v: print(f)
                     uos.rmdir(f)
                 else:
