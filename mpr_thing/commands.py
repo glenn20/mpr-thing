@@ -8,6 +8,7 @@
 
 import os, re, readline, locale, time, cmd, shutil, traceback
 import json, inspect, shlex, glob, fnmatch, subprocess, itertools
+from pathlib import Path
 from typing import (
     Any, Dict, Iterable, Callable, Optional, List, Tuple)
 
@@ -227,41 +228,23 @@ class RemoteCmd(cmd.Cmd):
         self.rcfile_loaded      = False
         self.multi_cmd_mode     = False
         self.prompt_colour      = 'yellow'  # Colour of the short prompt
-        self.alias: Dict[str, str] = {}     # Command aliases
-        self.params: Dict[str, Any] = {}     # Params we can use in prompt
-        self.names: Dict[str, str] = {}     # Map device unique_ids to names
+        self.alias:  Dict[str, str] = {}    # Command aliases
+        self.params: Dict[str, Any] = {}    # Params we can use in prompt
+        self.names:  Dict[str, str] = {}    # Map device unique_ids to names
         self.lsspec: Dict[str, str] = {}    # Extra colour specs for %ls
         readline.set_completer_delims(' \t\n>;')
-        super().__init__()
+
+        # Cmd.cmdloop() overrides completion settings in ~/.inputrc
+        # We can disable this by setting completekey=''
+        super().__init__(completekey='')
+        # But then we need to load the completer function ourselves
+        self.old_completer = readline.get_completer()
+        readline.set_completer(self.complete)  # type: ignore
 
         # Load the readline history file
         self.history_file = os.path.expanduser(HISTORY_FILE)
         if os.path.isfile(self.history_file):
             readline.read_history_file(self.history_file)
-
-        # Set the completion functions
-        # TODO: Wrap this in complete_default - reuse self.remote_cmds
-        fname = self.complete_filename
-        self.complete_fs        = fname
-        self.complete_ls        = fname
-        self.complete_cat       = fname
-        self.complete_edit      = fname
-        self.complete_touch     = fname
-        self.complete_mv        = fname
-        self.complete_cp        = fname
-        self.complete_rm        = fname
-        self.complete_get       = fname
-        fname = self.complete_directory
-        self.complete_cd        = fname
-        self.complete_mkdir     = fname
-        self.complete_rmdir     = fname
-        fname = self.complete_local_filename
-        self.complete_put       = fname
-        self.complete_run       = fname
-        self.complete_shell     = fname
-        fname = self.complete_local_directory
-        self.complete_mount     = fname
-        self.complete_lcd       = fname
 
     def load_rc_file(self, file: str) -> bool:
         'Read commands from "file" first in home folder then local folder.'
@@ -379,14 +362,13 @@ class RemoteCmd(cmd.Cmd):
         """
         for arg in args:
             import tempfile
-            fd, fname = tempfile.mkstemp()
-            os.close(fd)
-            try:
-                self.board.get(arg, fname)
-                if 0 == os.system(f'eval ${{EDITOR:-/usr/bin/vi}} {fname}'):
-                    self.board.put(fname, arg)
-            finally:
-                os.remove(fname)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                basename = Path(arg).name
+                dest = Path(tmpdir) / basename
+                self.board.get(arg, tmpdir)
+                if 0 == os.system(
+                        f'eval ${{EDITOR:-/usr/bin/vi}} {str(dest)}'):
+                    self.board.put(str(dest), arg)
 
     def do_touch(self, args: List[str]) -> None:
         """
@@ -427,26 +409,27 @@ class RemoteCmd(cmd.Cmd):
         self.board.rm(args, opts)
 
     def is_remote(self, filename: str, pwd: str) -> bool:
-        'Is the file on a remote mounted filesystem.'
-        return (filename.startswith('/remote') or
-                (pwd.startswith('/remote') and not filename.startswith('/')))
+        # Is the file on a remote mounted filesystem.
+        return (
+            filename.startswith('/remote') or
+            (pwd.startswith('/remote') and not filename.startswith('/')))
 
     def do_get(self, args: List[str]) -> None:
         """
         Copy a file from the board to a local folder:\n
-            %get [-n] file1 [file2 ...]
-            %get -d dest file1  # Copy files to "dest" instead of "."
+            %get [-n] file1 [file2 ...] [:dest]
+        If the last argument start with ":" use that as the destination folder.
         """
         opts = ''
         if args and args[0][0] == "-":
             opts, *args = args
-        dest = args.pop(0) if 'd' in opts else '.'
         self.load_board_params()
-        # Remove files which are on a remote mounted filesystem
         pwd: str = self.params['pwd']
         remote, args = partition(args, lambda x: self.is_remote(x, pwd))
+        # Remove files which are on a remote mounted filesystem
         for filename in remote:
             print("get: skipping /remote mounted folder:", filename)
+        dest = args.pop()[1:] if args[-1].startswith(':') else '.'
         self.board.get(args, dest, opts + 'rv')
 
     def do_put(self, args: List[str]) -> None:
@@ -460,10 +443,10 @@ class RemoteCmd(cmd.Cmd):
             opts, *args = args
         self.load_board_params()
         pwd: str = self.params['pwd']
-        if pwd.startswith('/remote'):
+        dest = args.pop()[1:] if args[-1].startswith(':') else pwd
+        if self.is_remote(dest, pwd):
             print("%put: do not use on mounted folder:", pwd)
             return
-        dest = args.pop()[1:] if args[-1].startswith(':') else '.'
         self.board.put(args, dest, opts + 'rv')
 
     # Directory commands
@@ -665,16 +648,24 @@ class RemoteCmd(cmd.Cmd):
         Any arguments which are not consumed by format specfiers will be
         added to the command after expanding the alias, eg:
             %ll /lib
-        NOTE: "ll" and "lr" are pre-builtin as aliases as above.
-        You can not override existing commands with an alias.
         """
         for arg in args:
-            print(arg)
             alias, value = arg.split('=', maxsplit=1)
             if not alias or not value:
                 print('Invalid alias: "{}"'.format(arg))
                 continue
             self.alias[alias] = value
+
+        # Now, save the aliases in the options file
+        self.save_options()
+
+    def do_unalias(self, args: List[str]) -> None:
+        """
+        Delete aliases which has been set with the %alias command:
+            %unalias ll [...]"""
+        for arg in args:
+            del self.alias[arg]
+        self.save_options()
 
     def do_set(self, args: List[str]) -> None:
         for arg in args:
@@ -720,6 +711,9 @@ class RemoteCmd(cmd.Cmd):
                 self.colour.spec.update(self.lsspec)
             else:
                 print("%set: unknown key:", key)
+        self.save_options()
+
+    def save_options(self) -> None:
         # Save the options in a startup file
         if not self.options_loaded:  # - unless we are reading the options file
             return
@@ -727,11 +721,12 @@ class RemoteCmd(cmd.Cmd):
                   os.path.expanduser('~/' + OPTIONS_FILE), 'w') as f:
             f.write(
                 '# Edit with caution: will be overwritten by mpr-thing.\n')
-            f.write('set prompt="{}"\n'.format(self.prompt_fmt))
-            f.write('set promptcolour="{}"\n'.format(self.prompt_colour))
-            f.write('set names=\'{}\'\n'.format(json.dumps(self.names)))
-            f.write('set lscolour=\'{}\'\n'.format(
-                json.dumps(self.lsspec)))
+            f.write(f'set prompt="{self.prompt_fmt}"\n')
+            f.write(f'set promptcolour="{self.prompt_colour}"\n')
+            f.write(f'set names=\'{json.dumps(self.names)}\'\n')
+            f.write(f'set lscolour=\'{json.dumps(self.lsspec)}\'\n')
+            for name, value in self.alias.items():
+                f.write(f'alias "{name}"="{value}"\n')
 
     def help_set(self) -> None:
         if self.do_set.__doc__:
@@ -798,7 +793,7 @@ class RemoteCmd(cmd.Cmd):
         self.write('Unknown command: "{}"\r\n'.format(line.strip()).encode())
         return not self.multi_cmd_mode
 
-    def do_help(self, args: List[str]) -> None:  # type: ignore
+    def do_help(self, args: List[str]) -> None:     # type: ignore
         'List available commands with "help" or detailed help with "help cmd".'
         # Need to override Cmd.do_help since we abuse the args parameter
         if not args:
@@ -867,44 +862,31 @@ class RemoteCmd(cmd.Cmd):
                     self.prompt_fmt.format_map(prompt_map))))
 
     # File and directory completion functions
-    def complete_filename(
+    def completedefault(                            # type: ignore
             self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
         'Return a list of filenames on the board starting with "word".'
         sep = word.rfind('/')
-        dir, word = word[:sep + 1] or '.', word[sep + 1:]
-        files = self.board.ls_dir(dir)
-        return [
-            str(f) + ('/' if f.is_dir() else '')
-            for f in files if f.name.startswith(word)] if files else []
+        dir, word = word[:sep + 1], word[sep + 1:]
+        cmd  = line.split()[0]
+        remote = cmd in self.remote_cmds
+        dir_cmd = cmd in ['cd', 'mkdir', 'rmdir', 'mount', 'lcd']
+        if remote:
+            lsdir = self.board.ls_dir(dir or '.')
+            files = [
+                str(f) + ('/' if f.is_dir() else '')
+                for f in lsdir if f.name.startswith(word)] if lsdir else []
+        else:
+            try:
+                _, dirs, files = next(os.walk(dir or '.'))
+                files = [dir + f for f in files if f.startswith(word)]
+                files.extend(dir + f + '/' for f in dirs if f.startswith(word))
+                files.sort()
+            except OSError as err:
+                print(OSError, err)
+                return []
 
-    def complete_directory(
-            self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
-        'Return a list of directories on the board starting with "match".'
-        return [
-            f for f in self.complete_filename(word, line, begidx, endidx)
-            if f.endswith('/')]
-
-    def complete_local_filename(
-            self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
-        'Return a list of local filenames starting with "match".'
-        try:
-            sep = word.rfind('/')
-            d, match = word[:sep + 1], word[sep + 1:]
-            _, dirs, files = next(os.walk(d or '.'))
-            files = [d + f for f in files if f.startswith(match)]
-            files.extend(d + f + '/' for f in dirs if f.startswith(match))
-            files.sort()
-            return files
-        except OSError as err:
-            print(OSError, err)
-        return []
-
-    def complete_local_directory(
-            self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
-        'Return a list of local directories starting with "match".'
-        return [
-            f for f in self.complete_local_filename(word, line, begidx, endidx)
-            if f.endswith('/')]
+        # print(files)
+        return [f for f in files if f.endswith('/')] if dir_cmd else files
 
     def reload_hooks(self) -> None:
         'Load/reload the helper code onto the micropython board.'
@@ -990,12 +972,18 @@ class RemoteCmd(cmd.Cmd):
         # punctuation_chars=True ensures semicolons can split commands
         lex = shlex.shlex(line, None, True, True)
         lex.wordchars += ':'
-        args = list(lex)  # List of all arguments, including cmd
-        if not args:
-            return args
+        return list(lex)
 
+    def process_args(self, args: List[str]) -> List[str]:
+        'Expand aliases, macros and glob expansiions.'
+
+        # Get the first command if multiple commands on one line.
+        # Push the rest of the args back onto the command queue
+        # eg: ls /lib ; rm /main.py
         def split_semicolons(args: List[str]) -> List[str]:
             # Split argslist by semicolons
+            if ';' not in args:
+                return args
             argslist = (  # [[arg1, ...], [arg1,...], ...]
                 list(l) for key, l in
                 itertools.groupby(args, lambda arg: arg == ';') if not key)
@@ -1009,17 +997,19 @@ class RemoteCmd(cmd.Cmd):
 
         # Expand any aliases
         args = self.expand_alias(args)
-        args = split_semicolons(args)
+        args = split_semicolons(args)   # Alias may expand to include ';'
 
         # Expand mpremote commandline macros
         mpremote_do_command_expansion(args)
         for i, arg in enumerate(args):
+            # Insert ';'s if necessary to split up run-together commands
+            # Eg: exec "x=2" eval "x**2" -> exec "x=2" ; eval "x**2"
             if arg in [
                     'connect', 'disconnect', 'mount', 'eval',
                     'exec', 'run', 'fs']:
                 if i > 0 and args[i - 1] != ';':
                     args.insert(i, ';')
-        args = split_semicolons(args)
+        args = split_semicolons(args)   # Macros expand to include ';'
 
         # Expand any glob patterns on the command line
         args = list(self.glob(args))
@@ -1047,27 +1037,26 @@ class RemoteCmd(cmd.Cmd):
         """Override the default Cmd.onecmd()."""
         if isinstance(line, list):
             # List of str is pushed back onto cmdqueue in self.split()
-            cmd, *args = list(self.glob(line))
+            args = line
         else:  # line is a string
             if self.multi_cmd_mode:  # Discard leading '%' in multi-cmd mode
-                if line and line[0] == "%":
+                if line and line.startswith('%') and not line.startswith('%%'):
                     line = line[1:]
                     readline.replace_history_item(1, line)
             readline.write_history_file(self.history_file)
 
             # A command line read from the input
             cmd, arg, line = self.parseline(line)
-            try:  # Process with split() first to handle ';' separator.
-                args = list(self.split(line))
-                cmd, *args = args if args else ['']
-            except ValueError as err:
-                print('%magic command error:', err)
-                return False
             if not line:
                 return self.emptyline()
             if not cmd:
                 return self.default(line)
 
+            # Split the command line into a list of args
+            args = list(self.split(line))
+
+        args = self.process_args(args)  # Expand aliases, macros and globs
+        cmd, *args = args if args else ['']
         self.lastcmd = ''
         func: Callable[[List[str]], bool] = getattr(self, 'do_' + cmd, None)
         if func:
