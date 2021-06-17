@@ -9,7 +9,8 @@ from pathlib import PurePosixPath, Path
 from typing import (
     Any, Dict, Sequence, Union, Iterable, Callable, Optional, List, Tuple)
 
-from mpremote.pyboard import stdout_write_bytes as pyboard_stdout_write_bytes
+from mpremote.pyboard import (
+    Pyboard, stdout_write_bytes as pyboard_stdout_write_bytes)
 from mpremote.pyboardextended import PyboardExtended
 from mpremote.main import execbuffer
 
@@ -74,7 +75,8 @@ class Board:
 
     def __init__(
             self,
-            pyb:    PyboardExtended,
+            # Pylance doesn't recognise PyboardExtended as subclass of Pyboard
+            pyb:    Union[PyboardExtended, Pyboard],
             writer: Writer) -> None:
         self.pyb = pyb
         self.writer = writer
@@ -355,8 +357,8 @@ class Board:
                 if verbose: print(f2)
                 if not dry_run:
                     self.put_file(str(file), str(f2))
-            elif recursive:
-                self.put_dir(self, file, )
+            elif recursive:  # file is a directory
+                self.put_dir(file, dest, verbose, dry_run)
             else:
                 print('put: skipping "{}", use "-r" to copy directories.'
                       .format(str(file)))
