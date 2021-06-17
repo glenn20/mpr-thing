@@ -138,20 +138,26 @@ class Board:
         self.exec(
             'open("{}", "a").close()'.format(filename))
 
-    def mv(self, filenames: Iterable[str], dest: str, opts: str) -> None:
+    def mv(
+            self,
+            filenames:  Union[Iterable[str], str],
+            dest:       str,
+            opts:       str
+            ) -> None:
+        if isinstance(filenames, str):
+            filenames = [filenames]
         self.exec('_helper.mv({}, "{}", {})'.format(
             [f.rstrip('/') if f != '/' else f for f in filenames],
             dest.rstrip('/') if dest != '/' else dest,
             'v' in opts))
 
-    def cp(self, filenames: Iterable[str], dest: str, opts: str) -> None:
-        self.exec('_helper.cp({}, "{}", {}, {})'.format(
-            [f.rstrip('/') if f != '/' else f for f in filenames],
-            dest.rstrip('/') if dest != '/' else dest,
-            self.default_depth if 'r' in opts else 0,
-            'v' in opts))
-
-    def rm(self, filenames: Iterable[str], opts: str) -> None:
+    def rm(
+            self,
+            filenames:  Union[Iterable[str], str],
+            opts:       str
+            ) -> None:
+        if isinstance(filenames, str):
+            filenames = [filenames]
         self.exec('_helper.rm({}, {}, {})'.format(
             [f.rstrip('/') if f != '/' else f for f in filenames],
             self.default_depth if 'r' in opts else 0,
@@ -189,10 +195,12 @@ class Board:
 
     def ls_files(
             self,
-            filenames:  Iterable[str]
+            filenames:  Union[Iterable[str], str]
             ) -> Iterable[RemotePath]:
         'Return a list of files (RemotePath) on board for list of filenames.'
         files: List[RemotePath] = []
+        if isinstance(filenames, str):
+            filenames = [filenames]
         for f in filenames:
             with catcher(self.write, silent=True):
                 mode, size, mtime = self.eval((
@@ -225,12 +233,14 @@ class Board:
 
     def ls(
             self,
-            filenames:  Iterable[str],
+            filenames:  Union[Iterable[str], str],
             opts:       str
             ) -> Iterable[Tuple[str, Iterable[RemotePath]]]:
         "Return a list of files on the board."
         recursive = 'R' in opts
         long_style = 'l' in opts
+        if isinstance(filenames, str):
+            filenames = [filenames]
         filenames = list(filenames)
         filenames.sort
         files = self.ls_files(filenames)
@@ -250,10 +260,55 @@ class Board:
                             d for d in subfiles if d.is_dir()):
                         dirs.insert(i + j + 1, subdir)
 
-    def get_file(self, filename: str, dest: str) -> None:
+    def cp(
+            self,
+            filenames:  Union[Iterable[str], str],
+            dest:       str,
+            opts:       str
+            ) -> None:
+        'Copy files and directories on the micropython board.'
+        verbose = 'v' in opts
+        depth = self.default_depth if 'r' in opts else 0
+        if isinstance(filenames, str):
+            filenames = [filenames]
+        files = list(self.ls_files([*filenames, dest]))
+        dest_f = files.pop()
+        if len(files) == 1:
+            # First - check for some special cases...
+            f = files[0]
+            if str(f) == str(dest_f):
+                print('%cp: Skipping: source is same as dest:', files[0])
+                return
+            if not f.is_dir() and not dest_f.is_dir():
+                # cp file1 file2
+                if verbose: print(str(dest))
+                self.exec(f'_helper.cp_file("{str(f)}", "{str(dest)}")')
+                return
+            elif f.is_dir() and not dest_f.exists():
+                # cp dir1 dir2 (where dir2 does not exist)
+                if verbose: print(str(dest))
+                self.mkdir(str(dest))
+                self.exec(
+                    '_helper.cp_dir("{}", "{}", {}, {})'.format(
+                        str(f) + '/.',  # Ugly hack to make it work
+                        str(dest_f), depth, verbose))
+                return
+        self.exec(
+            '_helper.cp({}, "{}", {}, {})'.format(
+                [str(f) for f in files], str(dest_f), depth, verbose))
+
+    def get_file(
+            self,
+            filename:   PathLike,
+            dest:       PathLike,
+            verbose:    bool = False,
+            dry_run:    bool = False
+            ) -> None:
         'Copy a file "filename" from the board to the local "dest" folder.'
         with raw_repl(self.pyb, self.write):
-            self.pyb.fs_get(filename, dest)
+            if verbose: print(str(dest))
+            if not dry_run:
+                self.pyb.fs_get(str(filename), str(dest))
 
     def get_dir(
             self,
@@ -278,21 +333,25 @@ class Board:
             for f in filelist:
                 f2 = destdir / f.name
                 if f.is_file():
-                    if verbose: print(str(f2))
-                    if not dry_run:
-                        self.get_file(str(f), str(f2))
+                    self.get_file(str(f), str(f2), verbose, dry_run)
 
     def get(
             self,
-            filenames:  Iterable[str],
+            filenames:  Union[Iterable[str], str],
             dest:       PathLike,
             opts:       str = ''
             ) -> None:
-        'Copy files from the board to a local folder:'
+        'Copy files and directories from the board to a local folder:'
         dest      = Path(dest)
         verbose   = 'v' in opts
         dry_run   = 'n' in opts
         recursive = 'r' in opts
+        if isinstance(filenames, str):
+            filenames = [filenames]
+        filenames = list(filenames)
+        if len(filenames) == 1 and not dest.is_dir():
+            self.get_file(filenames[0], str(dest), verbose, dry_run)
+            return
         if not dest.is_dir():
             print('get: Destination directory does not exist:', dest)
             return
@@ -300,23 +359,30 @@ class Board:
             # dir: str, file: RemotePathList (list of full pathnames)
             if not file.is_dir():
                 f2 = dest / file.name
-                if verbose: print(str(f2))
-                if not dry_run: self.get_file(str(file), str(f2))
+                self.get_file(str(file), str(f2), verbose, dry_run)
             elif recursive:  # Is a directory
                 self.get_dir(file, dest, verbose, dry_run)
             else:
                 print('get: skipping "{}", use "-r" to copy directories.'
                       .format(str(file)))
 
-    def put_file(self, filename: str, dest: str) -> None:
+    def put_file(
+            self,
+            filename:   PathLike,
+            dest:       PathLike,
+            verbose:    bool = False,
+            dry_run:    bool = False
+            ) -> None:
         'Copy a local file "filename" to the "dest" folder on the board.'
         with raw_repl(self.pyb, self.write):
-            self.pyb.fs_put(filename, dest)
+            if verbose: print(str(dest))
+            if not dry_run:
+                self.pyb.fs_put(str(filename), str(dest))
 
     def put_dir(
             self,
             dir:        Path,
-            dest:       Path,
+            dest:       RemotePath,
             verbose:    bool = False,
             dry_run:    bool = False
             ) -> None:
@@ -335,13 +401,11 @@ class Board:
                     self.mkdir(str(destdir))
             for f in files:
                 f1, f2 = subdir / f, destdir / f
-                if verbose: print(str(f2))
-                if not dry_run:
-                    self.put_file(str(f1), str(f2))
+                self.put_file(f1, f2, verbose, dry_run)
 
     def put(
             self,
-            filenames:  Iterable[str],
+            filenames:  Union[Iterable[str], str],
             dest:       PathLike,
             opts:       str = ''
             ) -> None:
@@ -350,13 +414,21 @@ class Board:
         verbose   = 'v' in opts
         dry_run   = 'n' in opts
         recursive = 'r' in opts
+        if isinstance(filenames, str):
+            filenames = [filenames]
+        filenames = list(filenames)
+        dest = list(self.ls_files([str(dest)]))[0]
+        if len(filenames) == 1 and not dest.is_dir():
+            self.put_file(filenames[0], dest, verbose, dry_run)
+            return
+        if not dest.is_dir():
+            print('get: Destination directory does not exist:', dest)
+            return
         for filename in filenames:
             file = Path(filename)
             if not file.is_dir():
                 f2 = dest / file.name
-                if verbose: print(f2)
-                if not dry_run:
-                    self.put_file(str(file), str(f2))
+                self.put_file(file, f2, verbose, dry_run)
             elif recursive:  # file is a directory
                 self.put_dir(file, dest, verbose, dry_run)
             else:
