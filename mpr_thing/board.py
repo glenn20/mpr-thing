@@ -12,8 +12,7 @@ from pathlib import PurePosixPath, Path
 from typing import (
     Any, Dict, Sequence, Union, Iterable, Callable, Optional, List, Tuple)
 
-from mpremote.pyboard import (
-    Pyboard, stdout_write_bytes as pyboard_stdout_write_bytes)
+from mpremote.pyboard import Pyboard, stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended
 from mpremote.main import execbuffer
 
@@ -102,6 +101,13 @@ class Board:
                 Board.do_hook_subs(
                     Board.hook_subs, self.cmd_hook_code))
 
+    def device_name(self) -> str:
+        'Get the name of the device connected to the micropython board.'
+        name = ''
+        if isinstance(self.pyb, PyboardExtended):
+            name = self.pyb.device_name
+        return name
+
     def load_hooks(self) -> None:
         self.exec(self.cmd_hook_code)
 
@@ -137,7 +143,7 @@ class Board:
         return eval(response)
 
     def exec(self, code: Union[str, bytes], follow: bool = True) -> None:
-        self.exec_(code, pyboard_stdout_write_bytes, follow=follow)
+        self.exec_(code, stdout_write_bytes, follow=follow)
 
     def cat(self, filename: str) -> None:
         'List the contents of the file "filename" on the board.'

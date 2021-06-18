@@ -815,6 +815,43 @@ class RemoteCmd(cmd.Cmd):
             return
         func()
 
+    # Load board hook code and params for the prompt
+    def reload_hooks(self) -> None:
+        'Load/reload the helper code onto the micropython board.'
+        self.board.load_hooks()
+        self.hooks_loaded = True
+        self.board.exec('_helper.localtime_offset = {}'.format(-time.timezone))
+        # Remove the mpremote aliases which override mpr-thing commands
+        for k in ['cat', 'ls', 'cp', 'rm', 'mkdir', 'rmdir', 'df']:
+            del(mpremote.main._command_expansions[k])
+
+    def reset_hooks(self) -> None:
+        self.hooks_loaded = False
+
+    def load_board_params(self) -> None:
+        'Initialise the board parameters - used in the longform prompt'
+        if 'id' in self.params:
+            return
+        # Load these parameters only once for each board
+        device_name = self.board.device_name()
+        self.params = {
+            'device':       device_name,
+            'dev':          re.sub(r'^/dev/tty(.).*(.)$',
+                                   r'\1\2',
+                                   device_name.lower()),
+            'platform':     self.board.eval('from sys import platform;'
+                                            'print(repr(platform))'),
+            'unique_id':    self.board.eval('from machine import unique_id;'
+                                            'print(repr(unique_id()))'
+                                            ).hex(':'),
+        }
+        self.params.update(      # Update the board params from uos.uname()
+            self.board.eval('print("dict{}".format(uos.uname()))'))
+        self.params['id'] = self.params['unique_id'][-8:]  # Last 3 octets
+        # Add the ansi colour names
+        self.params.update(
+            {c: self.colour.ansi(c) for c in self.colour.colour})
+
     def set_prompt(self) -> None:
         "Set the prompt using the prompt_fmt string."
         self.load_board_params()
@@ -861,21 +898,23 @@ class RemoteCmd(cmd.Cmd):
                     # Build the prompt from prompt_fmt (set with %set cmd)
                     self.prompt_fmt.format_map(prompt_map))))
 
-    # File and directory completion functions
+    # Command line parsing, splitting and globbing
     def completedefault(                            # type: ignore
             self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
-        'Return a list of filenames on the board starting with "word".'
-        sep = word.rfind('/')
-        dir, word = word[:sep + 1], word[sep + 1:]
-        cmd  = line.split()[0]
-        remote = cmd in self.remote_cmds
-        dir_cmd = cmd in ['cd', 'mkdir', 'rmdir', 'mount', 'lcd']
+        'Perform filename completion on "word".'
+        sep         = word.rfind('/')
+        dir, word   = word[:sep + 1], word[sep + 1:]
+        cmd         = line.split()[0]
+        remote      = cmd in self.remote_cmds
+        dir_cmd     = cmd in ['cd', 'mkdir', 'rmdir', 'mount', 'lcd']
         if remote:
-            lsdir = self.board.ls_dir(dir or '.')
+            # Execute filename completion on the board.
+            lsdir = self.board.ls_dir(dir or '.') or []
             files = [
                 str(f) + ('/' if f.is_dir() else '')
-                for f in lsdir if f.name.startswith(word)] if lsdir else []
+                for f in lsdir if f.name.startswith(word)]
         else:
+            # Execute filename completion on local host
             try:
                 _, dirs, files = next(os.walk(dir or '.'))
                 files = [dir + f for f in files if f.startswith(word)]
@@ -885,57 +924,20 @@ class RemoteCmd(cmd.Cmd):
                 print(OSError, err)
                 return []
 
-        # print(files)
+        # Return all filenames or only directories if requested
         return [f for f in files if f.endswith('/')] if dir_cmd else files
 
-    def reload_hooks(self) -> None:
-        'Load/reload the helper code onto the micropython board.'
-        self.board.load_hooks()
-        self.hooks_loaded = True
-        self.board.exec('_helper.localtime_offset = {}'.format(-time.timezone))
-        # Remove the mpremote aliases which override mpr-thing commands
-        for k in ['cat', 'ls', 'cp', 'rm', 'mkdir', 'rmdir', 'df']:
-            del(mpremote.main._command_expansions[k])
-
-    def load_board_params(self) -> None:
-        'Initialise the board parameters - used in the longform prompt'
-        if 'id' in self.params:
-            return
-        # Load these parameters only once for each board
-        self.params = {
-            'device':       self.board.pyb.device_name,
-            'dev':          re.sub(r'^/dev/tty(.).*(.)$',
-                                   r'\1\2',
-                                   self.board.pyb.device_name.lower()),
-            'platform':     self.board.eval('from sys import platform;'
-                                            'print(repr(platform))'),
-            'unique_id':    self.board.eval('from machine import unique_id;'
-                                            'print(repr(unique_id()))'
-                                            ).hex(':'),
-        }
-        self.params.update(      # Update the board params from uos.uname()
-            self.board.eval('print("dict{}".format(uos.uname()))'))
-        self.params['id'] = self.params['unique_id'][-8:]  # Last 3 octets
-        # Add the ansi colour names
-        self.params.update(
-            {c: self.colour.ansi(c) for c in self.colour.colour})
-
-    def reset_hooks(self) -> None:
-        self.hooks_loaded = False
-
-    # Command line parsing, splitting and globbing
     def glob_remote(self, word: str) -> Iterable[str]:
         'Expand glob patterns in the filename part of "path".'
-        sep = word.rfind('/')
-        dir, word = word[:sep + 1] or '.', word[sep + 1:]
         if '*' not in word and '?' not in word:
             return (f for f in [])  # type: ignore
-        files = self.board.ls_dir(dir)
-        return ((                   # Just return the generator
+        sep = word.rfind('/')
+        dir, word = word[:sep + 1] or '.', word[sep + 1:]
+        files = self.board.ls_dir(dir) or []
+        return (                    # Just return the generator
             str(f)
             for f in files
             if str(f)[0] != '.' and fnmatch.fnmatch(str(f), word))
-            if files else [])
 
     def glob(self, args: List[str]) -> Iterable[str]:
         remote_glob = args[0] in self.remote_cmds
@@ -950,6 +952,13 @@ class RemoteCmd(cmd.Cmd):
                 if not at_least_one:
                     yield arg   # if no match - just return the glob pattern
 
+    def split(self, line: str) -> List[str]:
+        'Split the command line into tokens.'
+        # punctuation_chars=True ensures semicolons can split commands
+        lex = shlex.shlex(line, None, True, True)
+        lex.wordchars += ':'
+        return list(lex)
+
     def expand_alias(self, args: List[str]) -> List[str]:
         if not args or args[0] not in self.alias:
             return args
@@ -963,19 +972,12 @@ class RemoteCmd(cmd.Cmd):
             int(n) for n in re.findall(r'{([0-9]+):?[^}]*}', alias))
 
         # Expand the alias: can include format specifiers: {}, {3}, ...
-        new_args = alias.format(*args).split()
+        new_args = self.split(alias.format(*args))
         # Add any unused args to the end of the line
         new_args.extend(arg for n, arg in enumerate(args) if n not in used)
 
         print(new_args)
         return new_args
-
-    def split(self, line: str) -> List[str]:
-        'Split the command line into tokens and expand any glob patterns.'
-        # punctuation_chars=True ensures semicolons can split commands
-        lex = shlex.shlex(line, None, True, True)
-        lex.wordchars += ':'
-        return list(lex)
 
     def process_args(self, args: List[str]) -> List[str]:
         'Expand aliases, macros and glob expansiions.'
@@ -1061,11 +1063,12 @@ class RemoteCmd(cmd.Cmd):
         args = self.process_args(args)  # Expand aliases, macros and globs
         cmd, *args = args if args else ['']
         self.lastcmd = ''
-        func: Callable[[List[str]], bool] = getattr(self, 'do_' + cmd, None)
+        func = getattr(self, 'do_' + cmd, None)
         if func:
-            return func(args)
+            ret: bool = func(args)
         else:
-            return self.default(' '.join([cmd, *args]))
+            ret = self.default(' '.join([cmd, *args]))
+        return ret
 
     def postcmd(self, stop: Any, line: str) -> bool:
         if self.multi_cmd_mode:
