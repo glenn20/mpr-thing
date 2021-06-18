@@ -6,9 +6,9 @@
 # vscode-fold=2
 
 from traceback import print_exc as traceback_print_exc
-from mpremote.pyboard import PyboardError
+from mpremote.pyboard import PyboardError, Pyboard
 from mpremote.pyboardextended import PyboardExtended
-from typing import (Any, Callable, Optional)
+from typing import (Any, Callable, Optional, Union)
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
@@ -56,7 +56,7 @@ class catcher:
 class raw_repl(catcher):
     def __init__(
             self,
-            pyb: PyboardExtended,
+            pyb: Union[PyboardExtended, Pyboard],
             write_fn: Writer,
             soft_reset: bool = True,
             silent: bool = False):
@@ -65,7 +65,7 @@ class raw_repl(catcher):
         self.restore_repl = False
         super().__init__(write_fn, silent)
 
-    def __enter__(self) -> PyboardExtended:
+    def __enter__(self) -> Union[PyboardExtended, Pyboard]:
         super().__enter__()
         # We can nest raw_repl() managers - only enter raw repl if necessary
         if not self.pyb.in_raw_repl:

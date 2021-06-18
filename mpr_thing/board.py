@@ -4,7 +4,10 @@
 
 # vscode-fold=2
 
-import os, re
+# For python<3.10: Allow method type annotations reference enclosing class
+from __future__ import annotations
+
+import os, re, stat
 from pathlib import PurePosixPath, Path
 from typing import (
     Any, Dict, Sequence, Union, Iterable, Callable, Optional, List, Tuple)
@@ -24,25 +27,32 @@ PathLike = Union[str, os.PathLike]
 # Paths on the board are always Posix paths even if local host is Windows
 class RemotePath(PurePosixPath):
     'A Path class with file status attributes attached.'
-    def __new__(cls, *args: str, **_: Dict[str, Any]) -> 'RemotePath':
-        # Need this because PurePath.__new__() does not take kwargs and
-        # initialises the instances in __new__() not __init__()
-        return super().__new__(cls, *args)
+    def __init__(self, *args: str) -> None:
+        self.mode    = 0
+        self.size    = 0
+        self.mtime   = 0
+        self._exists = False
 
-    def __init__(
-            self, *args: str,
-            stat: Sequence[int] = [],
-            exists: bool = True) -> None:
+    def set_modes(
+            self,
+            stat:   Sequence[int],
+            exists: bool = True
+            ) -> RemotePath:
         self.mode    = stat[0] if stat else 0
         self.size    = stat[1] if stat[1:] else 0
         self.mtime   = stat[2] if stat[2:] else 0
         self._exists = exists
+        return self
+
+    def set_exists(self, exists: bool) -> RemotePath:
+        self._exists = exists
+        return self
 
     def is_dir(self) -> bool:
-        return self._exists and ((self.mode & 0x4000) != 0)
+        return self._exists and ((self.mode & stat.S_IFDIR) != 0)
 
     def is_file(self) -> bool:
-        return self._exists and not ((self.mode & 0x4000) != 0)
+        return self._exists and ((self.mode & stat.S_IFREG) != 0)
 
     def exists(self) -> bool:
         return self._exists
@@ -95,7 +105,7 @@ class Board:
     def load_hooks(self) -> None:
         self.exec(self.cmd_hook_code)
 
-    def write(self, response: bytes) -> None:
+    def write(self, response: Union[bytes, str]) -> None:
         'Call the console writer for output (convert "str" to "bytes").'
         if response:
             if not isinstance(response, bytes):
@@ -182,15 +192,17 @@ class Board:
         if not os.path.isdir(path):
             print("%mount: No such directory:", path)
             return
-        with raw_repl(self.pyb, self.write):
-            self.pyb.mount_local(path)
+        if isinstance(self.pyb, PyboardExtended):
+            with raw_repl(self.pyb, self.write):
+                self.pyb.mount_local(path)
 
     def umount(self) -> None:
         'Unmount any Virtual Filesystem mounted at "/remote" on the board.'
         # Must chdir before umount or bad things happen.
         self.exec('uos.getcwd().startswith("/remote") and uos.chdir("/")')
-        with raw_repl(self.pyb, self.write):
-            self.pyb.umount_local()
+        if isinstance(self.pyb, PyboardExtended):
+            with raw_repl(self.pyb, self.write):
+                self.pyb.umount_local()
 
     def ls_files(
             self,
@@ -201,14 +213,15 @@ class Board:
         if isinstance(filenames, str):
             filenames = [filenames]
         for f in filenames:
+            stat: Optional[Tuple[int, int, int]] = None
             with catcher(self.write, silent=True):
-                mode, size, mtime = self.eval((
+                stat = self.eval((
                     'try: s=uos.stat("{}");print((s[0],s[6],s[8]))\n'
                     'except: s=None\n').format(f), silent=True)
             files.append(
-                RemotePath(f, stat=(mode, size, mtime))
-                if not catcher.exception else
-                RemotePath(f, exists=False))
+                RemotePath(f).set_modes(stat, exists=True)
+                if stat else
+                RemotePath(f).set_exists(False))
         return files
 
     def ls_dir(
@@ -217,9 +230,10 @@ class Board:
             long:   bool = False
             ) -> Optional[Iterable[RemotePath]]:
         'Return a list of files (RemotePath) on board in "dir".'
+        files = None
         with catcher(self.write, silent=False):
             files = [
-                RemotePath(dir, f, stat=stat)
+                RemotePath(dir, f).set_modes(stat)
                 for f, *stat in self.eval(
                     '_helper.ls("{}",{})'.format(dir, long),
                     silent=True)]

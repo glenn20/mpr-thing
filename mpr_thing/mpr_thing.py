@@ -23,12 +23,13 @@ def hard_reset(pyb: PyboardExtended) -> None:
     'Toggle DTR on the serial port to force a hardware reset of the board.'
     while hasattr(pyb.serial, 'orig_serial'):
         pyb.serial = pyb.serial.orig_serial
-    serial: Serial = pyb.serial
-    if hasattr(serial, 'dtr'):
-        serial.dtr = not serial.dtr
-        time.sleep(0.1)
-        serial.dtr = not serial.dtr
-    pyb.mounted = False
+    if isinstance(pyb.serial, Serial):
+        serial = pyb.serial
+        if hasattr(serial, 'dtr'):
+            serial.dtr = not serial.dtr
+            time.sleep(0.1)
+            serial.dtr = not serial.dtr
+        pyb.mounted = False
 
 
 def cursor_column(
