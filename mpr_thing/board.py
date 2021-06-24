@@ -1,10 +1,12 @@
-
+"""Provides the "Board" class which is a wrapper around the
+PyBoardExtended interface to a micropython board (from the mpremote tool).
+"""
 # Copyright (c) 2021 @glenn20
 # MIT License
 
 # vscode-fold=2
 
-# For python<3.10: Allow method type annotations reference enclosing class
+# For python<3.10: Allow method type annotations to reference enclosing class
 from __future__ import annotations
 
 import os, re, stat
@@ -14,19 +16,18 @@ from typing import (
 
 from mpremote.pyboard import Pyboard, stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended
-from mpremote.main import execbuffer
 
-from .catcher import catcher, raw_repl
+from .catcher import catcher, raw_repl as real_raw_repl
 
-Writer = Callable[[bytes], None]  # A type alias for console write functions
+Writer   = Callable[[bytes], None]  # A type alias for console write functions
 PathLike = Union[str, os.PathLike]
 
 
-# A Pathlib-compatible class to hold details on files from the board
-# Paths on the board are always Posix paths even if local host is Windows
+# Paths on the board are always Posix paths even if local host is Windows.
 class RemotePath(PurePosixPath):
-    'A Path class with file status attributes attached.'
+    'A Pathlib compatible class to hold details of files on the board.'
     def __init__(self, *args: str) -> None:
+        # Note: Path initialises from *args in __new__()!!!
         self.mode    = 0
         self.size    = 0
         self.mtime   = 0
@@ -37,31 +38,48 @@ class RemotePath(PurePosixPath):
             stat:   Sequence[int],
             exists: bool = True
             ) -> RemotePath:
+        """Set the file mode, size and mtime values.
+
+        Args:
+            stat: A tuple of ints: (mode, size, mtime)
+            exists=True: Flag if the file exists (or not).
+
+        Returns:
+            RemotePath: [description]
+        """
         self.mode    = stat[0] if stat else 0
         self.size    = stat[1] if stat[1:] else 0
         self.mtime   = stat[2] if stat[2:] else 0
         self._exists = exists
-        return self
+        return self  # So we can f = RemotePath('/main.py').set_modes(...)
 
     def set_exists(self, exists: bool) -> RemotePath:
+        """Set the existence state of the file."""
         self._exists = exists
         return self
 
     def is_dir(self) -> bool:
+        """Return True if the file is a directory."""
         return self._exists and ((self.mode & stat.S_IFDIR) != 0)
 
     def is_file(self) -> bool:
+        """Return True of the file is a regular file."""
         return self._exists and ((self.mode & stat.S_IFREG) != 0)
 
     def exists(self) -> bool:
+        """Return True if the file exists."""
         return self._exists
 
 
 # A collection of helper functions for file listings and filename completion
 # to be uploaded to the micropython board and processed on the local host.
 class Board:
+    """A wrapper for the PyboardExtended class from the mpremote tool.
+    Provides convenience methods and wrappers for filesystem operations
+    on a micropython board.
+    """
     # The helper code which runs on the micropython board
-    cmd_hook_code = b"from cmd_helper import _helper"
+    cmd_hook_code = b"Override this with contents of 'board/cmd_helper.py'."
 
     # Apply basic compression on hook code - (from mpremote tool).
     HookSubsType = List[Tuple[bytes, bytes, Dict[str, int]]]
@@ -87,10 +105,18 @@ class Board:
             # Pylance doesn't recognise PyboardExtended as subclass of Pyboard
             pyb:    Union[PyboardExtended, Pyboard],
             writer: Writer) -> None:
+        """Construct a "Board" instance.
+
+        Args:
+            pyb: An instance of the PyboardExtended class from mpremote tool.
+            writer: A function to print output from the micropython board.
+        """
         self.pyb = pyb
         self.writer = writer
         self.default_depth = 40   # Max recursion depth for cp(), rm()
 
+        # Load the helper code to install on the micropython board.
+        # The helper code is "board/cmd_helper.py" in the module directory.
         micropy_file = Path(__file__).parent / 'board' / 'cmd_helper.py'
         with open(micropy_file, 'rb') as f:
             self.cmd_hook_code = f.read()
@@ -109,6 +135,7 @@ class Board:
         return name
 
     def load_hooks(self) -> None:
+        'Load the __helper class and methods onto the micropython board.'
         self.exec(self.cmd_hook_code)
 
     def write(self, response: Union[bytes, str]) -> None:
@@ -118,41 +145,49 @@ class Board:
                 response = bytes(response, 'utf-8')
             self.writer(response)
 
+    def raw_repl(
+            self,
+            silent:     bool = False,
+            reraise:    bool = False
+            ) -> real_raw_repl:
+        'Return a context manager for the micropython raw repl.'
+        return real_raw_repl(
+            self.pyb, self.write, silent=silent, reraise=reraise)
+
     # Execute stuff on the micropython board
     def exec_(
             self,
             code:       Union[str, bytes],
             reader:     Optional[Writer] = None,
             silent:     bool = False,
-            follow:     bool = True,
+            reraise:    bool = False
             ) -> bytes:
         'Execute some code on the micropython board.'
-        if follow:
-            response: bytes = b''
-            with raw_repl(self.pyb, self.write, silent=silent):
-                response = self.pyb.exec_(code, reader)
-            return response
-        else:
-            with raw_repl(self.pyb, self.write, silent=silent):
-                _ = execbuffer(self.pyb, code, follow=False)
-            return b''
+        response: bytes = b''
+        with self.raw_repl(silent=silent, reraise=reraise):
+            response = self.pyb.exec_(code, reader)
+        return response
 
-    def eval(self, code: str, silent: bool = False) -> Any:
+    def eval(
+            self,
+            code:       str,
+            silent:     bool = False,
+            reraise:    bool = False
+            ) -> Any:
         # TODO: Use json for return values from board - for safety
-        response = self.exec_(code, silent=silent)
+        response = self.exec_(code, silent=silent, reraise=reraise)
         return eval(response)
 
-    def exec(self, code: Union[str, bytes], follow: bool = True) -> None:
-        self.exec_(code, stdout_write_bytes, follow=follow)
+    def exec(self, code: Union[str, bytes]) -> None:
+        self.exec_(code, stdout_write_bytes)
 
     def cat(self, filename: str) -> None:
         'List the contents of the file "filename" on the board.'
-        with raw_repl(self.pyb, self.write):
+        with self.raw_repl():
             self.pyb.fs_cat(filename)
 
     def touch(self, filename: str) -> None:
-        self.exec(
-            'open("{}", "a").close()'.format(filename))
+        self.exec('open("{}", "a").close()'.format(filename))
 
     def mv(
             self,
@@ -186,11 +221,11 @@ class Board:
         return pwd
 
     def mkdir(self, filename: str) -> None:
-        with raw_repl(self.pyb, self.write):
+        with self.raw_repl():
             self.pyb.fs_mkdir(filename)
 
     def rmdir(self, filename: str) -> None:
-        with raw_repl(self.pyb, self.write):
+        with self.raw_repl():
             self.pyb.fs_rmdir(filename)
 
     def mount(self, directory: str) -> None:
@@ -199,7 +234,7 @@ class Board:
             print("%mount: No such directory:", path)
             return
         if isinstance(self.pyb, PyboardExtended):
-            with raw_repl(self.pyb, self.write):
+            with self.raw_repl():
                 self.pyb.mount_local(path)
 
     def umount(self) -> None:
@@ -207,7 +242,7 @@ class Board:
         # Must chdir before umount or bad things happen.
         self.exec('uos.getcwd().startswith("/remote") and uos.chdir("/")')
         if isinstance(self.pyb, PyboardExtended):
-            with raw_repl(self.pyb, self.write):
+            with self.raw_repl():
                 self.pyb.umount_local()
 
     def ls_files(
@@ -323,9 +358,9 @@ class Board:
             dry_run:    bool = False
             ) -> None:
         'Copy a file "filename" from the board to the local "dest" folder.'
-        with raw_repl(self.pyb, self.write):
-            if verbose: print(str(dest))
-            if not dry_run:
+        if verbose: print(str(dest))
+        if not dry_run:
+            with self.raw_repl():
                 self.pyb.fs_get(str(filename), str(dest))
 
     def get_dir(
@@ -373,16 +408,21 @@ class Board:
         if not dest.is_dir():
             print('get: Destination directory does not exist:', dest)
             return
-        for file in self.ls_files(filenames):
-            # dir: str, file: RemotePathList (list of full pathnames)
-            if not file.is_dir():
-                f2 = dest / file.name
-                self.get_file(str(file), str(f2), verbose, dry_run)
-            elif recursive:  # Is a directory
-                self.get_dir(file, dest, verbose, dry_run)
-            else:
-                print('get: skipping "{}", use "-r" to copy directories.'
-                      .format(str(file)))
+        with self.raw_repl():
+            for file in self.ls_files(filenames):
+                # dir: str, file: RemotePathList (list of full pathnames)
+                if file.is_file():
+                    f2 = dest / file.name
+                    self.get_file(str(file), str(f2), verbose, dry_run)
+                elif file.is_dir():
+                    if recursive:  # Is a directory
+                        self.get_dir(file, dest, verbose, dry_run)
+                    else:
+                        print(
+                            'get: skipping "{}", use "-r" to copy directories.'
+                            .format(str(file)))
+                elif not file.exists():
+                    print('{}: No such file.'.format(str(file)))
 
     def put_file(
             self,
@@ -392,7 +432,7 @@ class Board:
             dry_run:    bool = False
             ) -> None:
         'Copy a local file "filename" to the "dest" folder on the board.'
-        with raw_repl(self.pyb, self.write):
+        with self.raw_repl():
             if verbose: print(str(dest))
             if not dry_run:
                 self.pyb.fs_put(str(filename), str(dest))
@@ -435,20 +475,22 @@ class Board:
         if isinstance(filenames, str):
             filenames = [filenames]
         filenames = list(filenames)
-        dest = list(self.ls_files([str(dest)]))[0]
-        if len(filenames) == 1 and not dest.is_dir():
-            self.put_file(filenames[0], dest, verbose, dry_run)
-            return
-        if not dest.is_dir():
-            print('get: Destination directory does not exist:', dest)
-            return
-        for filename in filenames:
-            file = Path(filename)
-            if not file.is_dir():
-                f2 = dest / file.name
-                self.put_file(file, f2, verbose, dry_run)
-            elif recursive:  # file is a directory
-                self.put_dir(file, dest, verbose, dry_run)
-            else:
-                print('put: skipping "{}", use "-r" to copy directories.'
-                      .format(str(file)))
+        with self.raw_repl():
+            dest = list(self.ls_files([str(dest)]))[0]
+            if len(filenames) == 1 and not dest.is_dir():
+                self.put_file(filenames[0], dest, verbose, dry_run)
+                return
+            if not dest.is_dir():
+                print('get: Destination directory does not exist:', dest)
+                return
+            for filename in filenames:
+                file = Path(filename)
+                if not file.is_dir():
+                    f2 = dest / file.name
+                    self.put_file(file, f2, verbose, dry_run)
+                elif recursive:  # file is a directory
+                    self.put_dir(file, dest, verbose, dry_run)
+                else:
+                    print(
+                        'put: skipping "{}", use "-r" to copy directories.'
+                        .format(str(file)))

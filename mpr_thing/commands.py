@@ -10,15 +10,16 @@ import os, re, readline, locale, time, cmd, shutil, traceback
 import json, inspect, shlex, glob, fnmatch, subprocess, itertools
 from pathlib import Path
 from typing import (
-    Any, Dict, Iterable, Callable, Optional, List, Tuple)
+    Any, Dict, Iterable, Callable, Optional, List, Tuple, Union)
 
-import mpremote.main
+from mpremote.main import do_command_expansion, _command_expansions
 
-from .catcher import catcher, raw_repl
+from .catcher import catcher
 from .board import RemotePath, Board
 
 from colorama import init as colorama_init  # For ansi colour on Windows
 
+# Ensure colour works on Windows terminals.
 colorama_init()
 
 # Set locale for file listings, etc.
@@ -202,6 +203,13 @@ class LocalCmd(cmd.Cmd):
     def postcmd(self, stop: Any, line: str) -> bool:
         return True
 
+    def cmdloop(self, intro: Optional[str] = None) -> None:
+        'Trap exceptions from the Cmd.cmdloop().'
+        try:
+            super().cmdloop(intro)
+        except Exception as err:
+            print(err)
+
 
 class RemoteCmd(cmd.Cmd):
     base_prompt: str = '\r>>> '
@@ -217,15 +225,11 @@ class RemoteCmd(cmd.Cmd):
         'cd', 'mkdir', 'rmdir', 'echo')
 
     def __init__(self, board: Board):
-        self.colour             = AnsiColour()
         self.board              = board
-        self.write_fn           = board.writer
+        self.colour             = AnsiColour()
         self.prompt             = self.base_prompt
         self.prompt_fmt         = ('{bold-cyan}{id} {yellow}{platform}'
                                    ' ({free}){bold-blue}{pwd}> ')
-        self.hooks_loaded       = False     # Is the _helper loaded on board
-        self.options_loaded     = False
-        self.rcfile_loaded      = False
         self.multi_cmd_mode     = False
         self.prompt_colour      = 'yellow'  # Colour of the short prompt
         self.alias:  Dict[str, str] = {}    # Command aliases
@@ -262,12 +266,12 @@ class RemoteCmd(cmd.Cmd):
             return True
         return False
 
-    def write(self, response: bytes) -> None:
+    def write(self, response: Union[bytes, str]) -> None:
         'Call the console writer for output (convert "str" to "bytes").'
         if response:
             if not isinstance(response, bytes):
                 response = bytes(response, 'utf-8')
-            self.write_fn(response)
+            self.board.writer(response)
 
     # File commands
     def print_files(self, files: Iterable[RemotePath], opts: str) -> None:
@@ -496,10 +500,10 @@ class RemoteCmd(cmd.Cmd):
     def do_exec(self, args: List[str]) -> None:
         """
         Exec the python code on the board, eg.:
-            %exec [--no-follow] print(34 * 35)
+            %exec print(34 * 35)
         "\\n" will be substituted with the end-of-line character, eg:
             %exec 'print("one")\\nprint("two")' """
-        self.board.exec(' '.join(args).replace('\\n', '\n'), follow=True)
+        self.board.exec(' '.join(args).replace('\\n', '\n'))
 
     def do_eval(self, args: List[str]) -> None:
         """
@@ -510,11 +514,7 @@ class RemoteCmd(cmd.Cmd):
     def do_run(self, args: List[str]) -> None:
         """
         Load and run local python files onto the board:
-            %run [--no-follow] file1.py [file2.py ...]"""
-        follow = True
-        if args and args[0] == '--no-follow':
-            args = args[1:]
-            follow = False
+            %run file1.py [file2.py ...]"""
         for arg in args:
             try:
                 with open(arg) as f:
@@ -522,7 +522,7 @@ class RemoteCmd(cmd.Cmd):
             except OSError as err:
                 print(OSError, err)
             else:
-                self.board.exec(buf, follow=follow)
+                self.board.exec(buf)
 
     def do_echo(self, args: List[str]) -> None:
         """
@@ -566,10 +566,11 @@ class RemoteCmd(cmd.Cmd):
                 (t.tm_year, t.tm_mon, t.tm_mday, 0,
                     t.tm_hour, t.tm_min, t.tm_sec, 0)))
         from time import asctime
-        t = self.board.eval('import utime;print(utime.localtime())')
-        self.write(asctime(
-            (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode('utf-8')
-            + b'\r\n')
+        with catcher(self.board.write):
+            t = self.board.eval('import utime;print(utime.localtime())')
+            self.write(asctime(
+                (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode('utf-8')
+                + b'\r\n')
 
     def do_mount(self, args: List[str]) -> None:
         """
@@ -604,15 +605,16 @@ class RemoteCmd(cmd.Cmd):
     def do_df(self, args: List[str]) -> None:
         """
         Print the free and used flash storage:
-            %df"""
-        if args:
-            print('df: unexpected args:', args)
-        _, bsz, tot, free, *_ = self.board.eval('print(uos.statvfs("/"))')
+            %df [dir1, dir2, ...]"""
         print("{:10} {:>9} {:>9} {:>9} {:>3}% {}".format(
-            "", "Bytes", "Used", "Free", "Use", "Mounted on"))
-        print("{:10} {:9d} {:9d} {:9d} {:3d}% {}".format(
-            "/", tot * bsz, (tot - free) * bsz, free * bsz,
-            round(100 * (1 - free / tot)), "/"))
+            "", "Bytes", "Used", "Available", "Use", "Mounted on"))
+        for dir in (args or ['/']):
+            with catcher(self.board.write):
+                _, bsz, tot, free, *_ = self.board.eval(
+                    'print(uos.statvfs("{}"))'.format(dir))
+                print("{:10} {:9d} {:9d} {:9d} {:3d}% {}".format(
+                    dir, tot * bsz, (tot - free) * bsz, free * bsz,
+                    round(100 * (1 - free / tot)), dir))
 
     def do_gc(self, args: List[str]) -> None:
         """
@@ -621,11 +623,12 @@ class RemoteCmd(cmd.Cmd):
             %gc"""
         if args:
             print('gc: unexpected args:', args)
-        before, after = self.board.eval(
-            'from gc import mem_free,collect;'
-            'b=mem_free();collect();print([b,mem_free()])')
-        print("Before GC: Free bytes =", before)
-        print("After  GC: Free bytes =", after)
+        with catcher(self.board.write):
+            before, after = self.board.eval(
+                'from gc import mem_free,collect;'
+                'b=mem_free();collect();print([b,mem_free()])')
+            print("Before GC: Free bytes =", before)
+            print("After  GC: Free bytes =", after)
 
     # Extra commands
     def do_shell(self, args: List[str]) -> None:
@@ -667,7 +670,7 @@ class RemoteCmd(cmd.Cmd):
             del self.alias[arg]
         self.save_options()
 
-    def do_set(self, args: List[str]) -> None:
+    def do_set(self, args: List[str]) -> None:  # noqa: C901 too complex
         for arg in args:
             try:
                 key, value = arg.split('=', maxsplit=1)
@@ -678,12 +681,13 @@ class RemoteCmd(cmd.Cmd):
                 continue
             if key == 'prompt':
                 saved = self.prompt_fmt
-                with catcher(self.write):
+                try:
                     self.prompt_fmt = value
                     backup = self.prompt
                     self.set_prompt()   # Check for errors in the prompt
                     self.prompt = backup
-                if catcher.exception:   # Restore the old prompt_fmt
+                except KeyError as err:   # Restore the old prompt_fmt
+                    print('%set prompt: Invalid key in prompt:', err)
                     self.prompt_fmt = saved
             elif key in ['promptcolour', 'promptcolor']:
                 ansi = self.colour.ansi(value)
@@ -714,7 +718,7 @@ class RemoteCmd(cmd.Cmd):
         self.save_options()
 
     def save_options(self) -> None:
-        # Save the options in a startup file
+        'Save the options in a startup file.'
         if not self.options_loaded:  # - unless we are reading the options file
             return
         with open(OPTIONS_FILE if os.path.isfile(OPTIONS_FILE) else
@@ -816,14 +820,10 @@ class RemoteCmd(cmd.Cmd):
         func()
 
     # Load board hook code and params for the prompt
-    def reload_hooks(self) -> None:
+    def load_hooks(self) -> None:
         'Load/reload the helper code onto the micropython board.'
         self.board.load_hooks()
-        self.hooks_loaded = True
         self.board.exec('_helper.localtime_offset = {}'.format(-time.timezone))
-        # Remove the mpremote aliases which override mpr-thing commands
-        for k in ['cat', 'ls', 'cp', 'rm', 'mkdir', 'rmdir', 'df']:
-            del(mpremote.main._command_expansions[k])
 
     def reset_hooks(self) -> None:
         self.hooks_loaded = False
@@ -834,19 +834,24 @@ class RemoteCmd(cmd.Cmd):
             return
         # Load these parameters only once for each board
         device_name = self.board.device_name()
-        self.params = {
-            'device':       device_name,
-            'dev':          re.sub(r'^/dev/tty(.).*(.)$',
-                                   r'\1\2',
-                                   device_name.lower()),
-            'platform':     self.board.eval('from sys import platform;'
-                                            'print(repr(platform))'),
-            'unique_id':    self.board.eval('from machine import unique_id;'
-                                            'print(repr(unique_id()))'
-                                            ).hex(':'),
-        }
-        self.params.update(      # Update the board params from uos.uname()
-            self.board.eval('print("dict{}".format(uos.uname()))'))
+        self.params['device'] = device_name
+        self.params['dev'] = \
+            re.sub(  # /dev/ttyUSB1 -> u1
+                r'^/dev/tty(.).*(.)$', r'\1\2',
+                re.sub(  # COM2 -> c2
+                    r'^COM([0-9]+)$', r'c\1',
+                    device_name.lower()))
+        with catcher(self.board.write):
+            self.params['platform'] = self.board.eval(
+                'from sys import platform;print(repr(platform))')
+        with catcher(self.board.write):
+            self.params['unique_id'] = self.board.eval(
+                'from machine import unique_id;'
+                'print(repr(unique_id()))').hex(':')
+
+        with catcher(self.board.write):
+            self.params.update(      # Update the board params from uos.uname()
+                self.board.eval('print("dict{}".format(uos.uname()))'))
         self.params['id'] = self.params['unique_id'][-8:]  # Last 3 octets
         # Add the ansi colour names
         self.params.update(
@@ -855,10 +860,9 @@ class RemoteCmd(cmd.Cmd):
     def set_prompt(self) -> None:
         "Set the prompt using the prompt_fmt string."
         self.load_board_params()
-        pwd: str
-        alloc: int
-        free: int
-        pwd, alloc, free = self.board.eval('_helper.pr()')
+        pwd, alloc, free = '', 0, 0
+        with catcher(self.board.write):
+            pwd, alloc, free = self.board.eval('_helper.pr()')
 
         alloc, free = int(alloc), int(free)
         free_pc = round(100 * free / (alloc + free))
@@ -1005,7 +1009,7 @@ class RemoteCmd(cmd.Cmd):
         args = split_semicolons(args)   # Alias may expand to include ';'
 
         # Expand mpremote commandline macros
-        mpremote.main.do_command_expansion(args)
+        do_command_expansion(args)  # From mpremote.main
         for i, arg in enumerate(args):
             # Insert ';'s if necessary to split up run-together commands
             # Eg: exec "x=2" eval "x**2" -> exec "x=2" ; eval "x**2"
@@ -1023,14 +1027,20 @@ class RemoteCmd(cmd.Cmd):
 
     # Cmd control functions
     def preloop(self) -> None:
-        if not self.hooks_loaded:
-            self.reload_hooks()     # Load the helper code onto the board
-        if not self.options_loaded:
+        self.options_loaded: bool
+        self.rcfile_loaded:  bool
+        if not hasattr(self, 'hooks_loaded') or not self.hooks_loaded:
+            self.load_hooks()     # Load the helper code onto the board
+            self.hooks_loaded = True
+        if not hasattr(self, 'options_loaded') or not self.options_loaded:
             self.load_rc_file(OPTIONS_FILE)
             self.options_loaded = True
-        if not self.rcfile_loaded:
+        if not hasattr(self, 'rcfile_loaded') or not self.rcfile_loaded:
             self.load_rc_file(RC_FILE)
             self.rcfile_loaded = True
+            # Remove the mpremote aliases which override mpr-thing commands
+            for k in ['cat', 'ls', 'cp', 'rm', 'mkdir', 'rmdir', 'df']:
+                del(_command_expansions[k])  # From mpremote.main
         if not self.multi_cmd_mode:
             self.prompt = \
                 self.colour(self.prompt_colour, self.base_prompt) + '%'
@@ -1061,7 +1071,7 @@ class RemoteCmd(cmd.Cmd):
             args = list(self.split(line))
 
         args = self.process_args(args)  # Expand aliases, macros and globs
-        cmd, *args = args if args else ['']
+        cmd, *args = args or ['']
         self.lastcmd = ''
         func = getattr(self, 'do_' + cmd, None)
         if func:
@@ -1077,14 +1087,17 @@ class RemoteCmd(cmd.Cmd):
         return not self.multi_cmd_mode and not self.cmdqueue
 
     def cmdloop(self, intro: Optional[str] = None) -> None:
-        'Add a raw_repl and exception catcher to the Cmd.cmdloop().'
-        while True:
-            with raw_repl(self.board.pyb, self.write,
-                          soft_reset=False, silent=False):
+        'Catch exceptions and restart the Cmd.cmdloop().'
+        stop = False
+        while not stop:
+            stop = True
+            try:
                 super().cmdloop(intro)
-            if type(catcher.exception) != KeyboardInterrupt:
-                break
-            print()
+            except KeyboardInterrupt:
+                stop = False
+            except Exception as err:
+                print("Error in command:", err)
+                stop = False
 
     def emptyline(self) -> bool:   # Else empty lines repeat last command
         return not self.multi_cmd_mode

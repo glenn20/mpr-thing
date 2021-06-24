@@ -12,7 +12,6 @@ from mpremote.pyboard import PyboardError
 from mpremote.pyboardextended import PyboardExtended
 from mpremote.console import ConsolePosix, ConsoleWindows
 
-from .catcher import raw_repl
 from .board import Board
 from .commands import LocalCmd, RemoteCmd
 
@@ -61,7 +60,7 @@ def cursor_column(
 # This is going to override do_repl_main_loop in the mpremote module
 # It interprets a "!" or "%" character typed at the start of a line
 # at the base python prompt as starting a "magic" command.
-def my_do_repl_main_loop(
+def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
         pyb:                PyboardExtended,
         console_in:         Union[ConsolePosix, ConsoleWindows],
         console_out_write:  Writer,
@@ -72,6 +71,8 @@ def my_do_repl_main_loop(
     'An overload function for the main repl loop in "mpremote".'
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
     local, remote = LocalCmd(), RemoteCmd(Board(pyb, console_out_write))
+    prompt = b"\n>>> "
+
     while True:
         if isinstance(console_in, ConsolePosix):
             # TODO pyb.serial might not have fd
@@ -111,21 +112,26 @@ def my_do_repl_main_loop(
                 beginning_of_line = True
             elif (c == b"!" and at_prompt  # Magic sequence if at start of line
                     and (beginning_of_line or
-                         cursor_column(console_in, console_out_write) == 5)):
+                         cursor_column(
+                             console_in, console_out_write) == len(prompt))):
                 console_out_write(b"\x1b[2K")  # Clear other chars on line
                 console_in.exit()
-                with raw_repl(pyb, console_out_write, soft_reset=False):
+                try:
                     local.cmdloop()
-                console_in.enter()
+                finally:
+                    console_in.enter()
                 pyb.serial.write(b"\x0d")  # Force another prompt
                 beginning_of_line = True
             elif (c == b"%" and at_prompt  # Magic sequence if at start of line
                     and (beginning_of_line or
-                         cursor_column(console_in, console_out_write) == 5)):
+                         cursor_column(
+                             console_in, console_out_write) == len(prompt))):
                 console_out_write(b"\x1b[2K")  # Clear other chars on line
                 console_in.exit()
-                remote.cmdloop()
-                console_in.enter()
+                try:
+                    remote.cmdloop()
+                finally:
+                    console_in.enter()
                 beginning_of_line = True
             elif c == b"\x0d":      # ctrl-m: carriage return
                 pyb.serial.write(c)
@@ -154,10 +160,10 @@ def my_do_repl_main_loop(
 
                 # Set at_prompt=True if we see the prompt string
                 # Stays set till the next newline char
-                if oc == b"\n>>> "[prompt_char_count]:
+                if oc == prompt[prompt_char_count]:
                     at_prompt = False           # Reset at_prompt after '\n'
                     prompt_char_count += 1
-                    if prompt_char_count == 5:
+                    if prompt_char_count == len(prompt):
                         prompt_char_count = 0
                         at_prompt = True
                 else:
