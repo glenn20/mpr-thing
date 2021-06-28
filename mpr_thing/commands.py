@@ -1,23 +1,29 @@
-#!/usr/bin/env python3
-
+# commands.py: Support for mpremote-style filesystem commands at the
+# micropython prompt using an Ipython-like '%' escape sequence.
+#
+# MIT License
 # Copyright (c) 2021 @glenn20
 
-# MIT License
-
-# vscode-fold=2
+# For python<3.10: Allow method type annotations to reference enclosing class
+# Allow type1 | type2 instead of Union[type1, type2]
+# Allow list[str] instead of List[str]
+from __future__ import annotations
 
 import os, re, readline, locale, time, cmd, shutil, traceback
 import json, inspect, shlex, glob, fnmatch, subprocess, itertools
 from pathlib import Path
 from typing import (
-    Any, Dict, Iterable, Callable, Optional, List, Tuple, Union)
+    Any, Dict, List, Iterable, Callable, Optional, Tuple, Union)
 
-from mpremote.main import do_command_expansion, _command_expansions
+import mpremote.main
 
 from .catcher import catcher
 from .board import RemotePath, Board
 
 from colorama import init as colorama_init  # For ansi colour on Windows
+
+# Type alias for the list of command arguments
+Argslist = List[str]
 
 # Ensure colour works on Windows terminals.
 colorama_init()
@@ -33,9 +39,9 @@ RC_FILE      = '.mpr-thing.rc'
 def partition(
         items: Iterable[Any],
         predicate: Callable[[Any], bool]
-        ) -> Tuple[List[Any], List[Any]]:
-    a: List[Any]
-    b: List[Any]
+        ) -> Tuple[list[Any], list[Any]]:
+    a: list[Any]
+    b: list[Any]
     a, b = [], []
     for item in items:
         (a if predicate(item) else b).append(item)
@@ -163,7 +169,7 @@ class LocalCmd(cmd.Cmd):
     # Completion of filenames on the local filesystem
     def completedefault(  # type: ignore
             self, match: str, line: str,
-            begidx: int, endidx: int) -> List[str]:
+            begidx: int, endidx: int) -> Argslist:
         'Return a list of files on the local host which start with "match".'
         try:
             sep = match.rfind('/')
@@ -179,7 +185,7 @@ class LocalCmd(cmd.Cmd):
 
     # Completion of directories on the local filesystem
     def complete_cd(
-            self, text: str, line: str, begidx: int, endidx: int) -> List[str]:
+            self, text: str, line: str, begidx: int, endidx: int) -> Argslist:
         'Return a list of directories which start with "match".'
         return [
             f for f in self.completedefault(text, line, begidx, endidx)
@@ -223,6 +229,10 @@ class RemoteCmd(cmd.Cmd):
     remote_cmds = (
         'fs', 'ls', 'cat', 'edit', 'touch', 'mv', 'cp', 'rm', 'get',
         'cd', 'mkdir', 'rmdir', 'echo')
+    dir_cmds = (
+        'cd', 'mkdir', 'rmdir', 'mount', 'lcd')
+    noglob_cmds = (
+        'eval', 'exec', 'alias', 'unalias', 'set')
 
     def __init__(self, board: Board):
         self.board              = board
@@ -313,7 +323,7 @@ class RemoteCmd(cmd.Cmd):
                         spaces[len(f.name):], sep='',
                         end=('' if n % cols and n < len(files) else '\n'))
 
-    def do_fs(self, args: List[str]) -> None:
+    def do_fs(self, args: Argslist) -> None:
         """
         Emulate the mpremote command line argument filesystem operations:
             %fs [cat,ls,cp,rm,mkdir.rmdir] [args,...]"""
@@ -333,7 +343,7 @@ class RemoteCmd(cmd.Cmd):
             return
         fs_cmd(args[1:])
 
-    def do_ls(self, args: List[str]) -> None:
+    def do_ls(self, args: Argslist) -> None:
         """
         List files on the board:
             %ls [-[lR]] [file_or_dir1 ...]
@@ -352,14 +362,14 @@ class RemoteCmd(cmd.Cmd):
                 self.print_files(files, opts)
                 linebreak = '\n'
 
-    def do_cat(self, args: List[str]) -> None:
+    def do_cat(self, args: Argslist) -> None:
         """
         List the contents of files on the board:
             %cat file [file2 ...]"""
         for arg in args:
             self.board.cat(arg)
 
-    def do_edit(self, args: List[str]) -> None:
+    def do_edit(self, args: Argslist) -> None:
         """
         Copy a file from the board, open it in your editor, then copy it back:
             %edit file1 [file2 ...]
@@ -374,14 +384,14 @@ class RemoteCmd(cmd.Cmd):
                         f'eval ${{EDITOR:-/usr/bin/vi}} {str(dest)}'):
                     self.board.put(str(dest), arg)
 
-    def do_touch(self, args: List[str]) -> None:
+    def do_touch(self, args: Argslist) -> None:
         """
         Create a file on the board:
             %touch file [file2 ...]"""
         for arg in args:
             self.board.touch(arg)
 
-    def do_mv(self, args: List[str]) -> None:
+    def do_mv(self, args: Argslist) -> None:
         """
         Rename/move a file or directory on the board:
             %mv old new
@@ -392,7 +402,7 @@ class RemoteCmd(cmd.Cmd):
         dest = args.pop()
         self.board.mv(args, dest, opts)
 
-    def do_cp(self, args: List[str]) -> None:
+    def do_cp(self, args: Argslist) -> None:
         """
         Make a copy of a file or directory on the board, eg:
             %cp [-r] existing new
@@ -403,7 +413,7 @@ class RemoteCmd(cmd.Cmd):
         dest = args.pop()
         self.board.cp(args, dest, opts)
 
-    def do_rm(self, args: List[str]) -> None:
+    def do_rm(self, args: Argslist) -> None:
         """
         Delete files from the board:
             %rm [-r] file1 [file2 ...]"""
@@ -418,7 +428,7 @@ class RemoteCmd(cmd.Cmd):
             filename.startswith('/remote') or
             (pwd.startswith('/remote') and not filename.startswith('/')))
 
-    def do_get(self, args: List[str]) -> None:
+    def do_get(self, args: Argslist) -> None:
         """
         Copy a file from the board to a local folder:\n
             %get [-n] file1 [file2 ...] [:dest]
@@ -436,7 +446,7 @@ class RemoteCmd(cmd.Cmd):
         dest = args.pop()[1:] if args[-1].startswith(':') else '.'
         self.board.get(args, dest, opts + 'rv')
 
-    def do_put(self, args: List[str]) -> None:
+    def do_put(self, args: Argslist) -> None:
         """
         Copy local files to the current folder on the board:
             %put file [file2 ...] [:dest]
@@ -454,14 +464,14 @@ class RemoteCmd(cmd.Cmd):
         self.board.put(args, dest, opts + 'rv')
 
     # Directory commands
-    def do_cd(self, args: List[str]) -> None:
+    def do_cd(self, args: Argslist) -> None:
         """
         Change the current directory on the board (with os.setpwd()):
             %cd /lib"""
         arg = args[0] if args else '/'
         self.board.cd(arg)
 
-    def do_pwd(self, args: List[str]) -> None:
+    def do_pwd(self, args: Argslist) -> None:
         """
         Print the current working directory on the board:
             %pwd"""
@@ -469,7 +479,7 @@ class RemoteCmd(cmd.Cmd):
             print('pwd: unexpected args:', args)
         print(self.board.pwd())
 
-    def do_lcd(self, args: List[str]) -> None:
+    def do_lcd(self, args: Argslist) -> None:
         """
         Change the current directory on the local host:
             %lcd ..
@@ -482,14 +492,14 @@ class RemoteCmd(cmd.Cmd):
             except OSError as err:
                 print(OSError, err)
 
-    def do_mkdir(self, args: List[str]) -> None:
+    def do_mkdir(self, args: Argslist) -> None:
         """
         Create a new directory on the board:
             %mkdir /test"""
         for arg in args:
             self.board.mkdir(arg)
 
-    def do_rmdir(self, args: List[str]) -> None:
+    def do_rmdir(self, args: Argslist) -> None:
         """
         Delete/remove a directory on the board (if it is empty)
             %rmdir /test"""
@@ -497,7 +507,7 @@ class RemoteCmd(cmd.Cmd):
             self.board.rmdir(arg)
 
     # Execute code on the board
-    def do_exec(self, args: List[str]) -> None:
+    def do_exec(self, args: Argslist) -> None:
         """
         Exec the python code on the board, eg.:
             %exec print(34 * 35)
@@ -505,13 +515,13 @@ class RemoteCmd(cmd.Cmd):
             %exec 'print("one")\\nprint("two")' """
         self.board.exec(' '.join(args).replace('\\n', '\n'))
 
-    def do_eval(self, args: List[str]) -> None:
+    def do_eval(self, args: Argslist) -> None:
         """
         Eval and print the python code on the board, eg.:
             %eval 34 * 35"""
         self.board.exec('print({})'.format(' '.join(args)))
 
-    def do_run(self, args: List[str]) -> None:
+    def do_run(self, args: Argslist) -> None:
         """
         Load and run local python files onto the board:
             %run file1.py [file2.py ...]"""
@@ -524,14 +534,23 @@ class RemoteCmd(cmd.Cmd):
             else:
                 self.board.exec(buf)
 
-    def do_echo(self, args: List[str]) -> None:
+    def do_echo(self, args: Argslist) -> None:
         """
-        Echo a command line after file pattern expansion:
-           %echo *.py Make*"""
-        print(' '.join(args))
+        Echo a command line after file pattern and parameter expansion.
+        Eg:
+           %echo "Files on {name}:" *.py
+           %echo "Free memory on {name} is {green}{free}{reset} bytes."
+
+        where parameters are the same as for "set prompt=" (See "help set").
+        Hit the TAB key after typing '{' to see all the available parameters.
+        """
+        opts, *args = args if args and args[0].startswith("-") else ('', *args)
+        print(
+            ' '.join(args).format_map(self.params),
+            end='' if 'n' in opts else '\n')
 
     # Board commands
-    def do_uname(self, args: List[str]) -> None:
+    def do_uname(self, args: Argslist) -> None:
         """
         Print information about the hardware and software:
             %uname"""
@@ -543,7 +562,7 @@ class RemoteCmd(cmd.Cmd):
             '{version} {sysname} {machine}'
             .format_map(self.params)).encode('utf-8') + b'\r\n')
 
-    def do_time(self, args: List[str]) -> None:
+    def do_time(self, args: Argslist) -> None:
         """
         Set or print the time on the board:
             %time set       : Set the RTC clock on the board from local time
@@ -572,7 +591,7 @@ class RemoteCmd(cmd.Cmd):
                 (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode('utf-8')
                 + b'\r\n')
 
-    def do_mount(self, args: List[str]) -> None:
+    def do_mount(self, args: Argslist) -> None:
         """
         Mount a local folder onto the board at "/remote" as a Virtual
         FileSystem:
@@ -585,7 +604,7 @@ class RemoteCmd(cmd.Cmd):
             .format(args).encode('utf-8'))
         self.board.exec('print(uos.getcwd())')
 
-    def do_umount(self, args: List[str]) -> None:
+    def do_umount(self, args: Argslist) -> None:
         """
         Unmount any Virtual Filesystem mounted at \"/remote\" on the board:
             %umount"""
@@ -594,7 +613,7 @@ class RemoteCmd(cmd.Cmd):
         self.board.umount()
         self.board.exec('print(uos.getcwd())')
 
-    def do_free(self, args: List[str]) -> None:
+    def do_free(self, args: Argslist) -> None:
         """
         Print the free and used memory:
             %free"""
@@ -602,7 +621,7 @@ class RemoteCmd(cmd.Cmd):
         self.board.exec(
             'from micropython import mem_info; mem_info({})'.format(verbose))
 
-    def do_df(self, args: List[str]) -> None:
+    def do_df(self, args: Argslist) -> None:
         """
         Print the free and used flash storage:
             %df [dir1, dir2, ...]"""
@@ -616,7 +635,7 @@ class RemoteCmd(cmd.Cmd):
                     dir, tot * bsz, (tot - free) * bsz, free * bsz,
                     round(100 * (1 - free / tot)), dir))
 
-    def do_gc(self, args: List[str]) -> None:
+    def do_gc(self, args: Argslist) -> None:
         """
         Run the micropython garbage collector on the board to free memory.
         Will also print the free memory before and after gc:
@@ -631,7 +650,7 @@ class RemoteCmd(cmd.Cmd):
             print("After  GC: Free bytes =", after)
 
     # Extra commands
-    def do_shell(self, args: List[str]) -> None:
+    def do_shell(self, args: Argslist) -> None:
         """
         Execute shell commands from the "%" prompt as well, eg:
             %!date"""
@@ -640,7 +659,7 @@ class RemoteCmd(cmd.Cmd):
         else:
             os.system(' '.join(args))   # TODO: Use interactive shell
 
-    def do_alias(self, args: List[str]) -> None:
+    def do_alias(self, args: Argslist) -> None:
         """
         Assign an alias for other commands: eg:
             %alias ll="ls -l" lr="ls -lR"
@@ -662,7 +681,7 @@ class RemoteCmd(cmd.Cmd):
         # Now, save the aliases in the options file
         self.save_options()
 
-    def do_unalias(self, args: List[str]) -> None:
+    def do_unalias(self, args: Argslist) -> None:
         """
         Delete aliases which has been set with the %alias command:
             %unalias ll [...]"""
@@ -670,7 +689,7 @@ class RemoteCmd(cmd.Cmd):
             del self.alias[arg]
         self.save_options()
 
-    def do_set(self, args: List[str]) -> None:  # noqa: C901 too complex
+    def do_set(self, args: Argslist) -> None:  # noqa: C901 too complex
         for arg in args:
             try:
                 key, value = arg.split('=', maxsplit=1)
@@ -719,8 +738,6 @@ class RemoteCmd(cmd.Cmd):
 
     def save_options(self) -> None:
         'Save the options in a startup file.'
-        if not self.options_loaded:  # - unless we are reading the options file
-            return
         with open(OPTIONS_FILE if os.path.isfile(OPTIONS_FILE) else
                   os.path.expanduser('~/' + OPTIONS_FILE), 'w') as f:
             f.write(
@@ -733,8 +750,7 @@ class RemoteCmd(cmd.Cmd):
                 f.write(f'alias "{name}"="{value}"\n')
 
     def help_set(self) -> None:
-        if self.do_set.__doc__:
-            print(inspect.cleandoc("""
+        print(inspect.cleandoc("""
         Set some options, eg:
             %set prompt='{cyan}{name}@{dev}-{sysname}-({free}){blue}{pwd}> '
             %set prompt='{cyan}{name}@{dev}({free}){green}{lcd1}:{blue}{pwd}> '
@@ -771,7 +787,9 @@ class RemoteCmd(cmd.Cmd):
             {pwd}: current working directory on board
             {free/_pc}: the current free heap memory in bytes/percentage
             {lcdn}: last n parts of local working directory
-            {name}: name of current board or {id} if name is not set"""))
+            {name}: name of current board or {id} if name is not set
+
+        Completion of parameter names is supported by hitting the TAB key."""))
 
     def default(self, line: str) -> bool:
         'Process any commandlines not matching builtin commands.'
@@ -797,7 +815,7 @@ class RemoteCmd(cmd.Cmd):
         self.write('Unknown command: "{}"\r\n'.format(line.strip()).encode())
         return not self.multi_cmd_mode
 
-    def do_help(self, args: List[str]) -> None:     # type: ignore
+    def do_help(self, args: Argslist) -> None:     # type: ignore
         'List available commands with "help" or detailed help with "help cmd".'
         # Need to override Cmd.do_help since we abuse the args parameter
         if not args:
@@ -866,20 +884,19 @@ class RemoteCmd(cmd.Cmd):
 
         alloc, free = int(alloc), int(free)
         free_pc = round(100 * free / (alloc + free))
-        heap_used = str(max(0, self.params.get('free', free) - free)).rjust(5)
+        free_delta = max(0, self.params.get('free', free) - free)
 
         # Update some dynamic info for the prompt
-        self.params['pwd']       = pwd
-        self.params['heap_used'] = heap_used
-        self.params['free']      = free
-        self.params['free_pc']   = free_pc
-        self.params['lcd']       = os.getcwd()
-        self.params['lcd3']      = '/'.join(os.getcwd().rsplit('/', 3)[1:])
-        self.params['lcd2']      = '/'.join(os.getcwd().rsplit('/', 2)[1:])
-        self.params['lcd1']      = '/'.join(os.getcwd().rsplit('/', 1)[1:])
-        self.params['name']      = self.names.get(    # Look up name for board
+        self.params['pwd']        = pwd
+        self.params['free_delta'] = free_delta
+        self.params['free']       = free
+        self.params['free_pc']    = free_pc
+        self.params['lcd']        = os.getcwd()
+        self.params['lcd3']       = '/'.join(os.getcwd().rsplit('/', 3)[1:])
+        self.params['lcd2']       = '/'.join(os.getcwd().rsplit('/', 2)[1:])
+        self.params['lcd1']       = '/'.join(os.getcwd().rsplit('/', 1)[1:])
+        self.params['name']       = self.names.get(    # Look up name for board
             self.params['unique_id'], self.params['id'])
-
         prompt_colours = {
             'free':     ('green' if free_pc > 50 else
                          'yellow' if free_pc > 25 else
@@ -904,14 +921,22 @@ class RemoteCmd(cmd.Cmd):
 
     # Command line parsing, splitting and globbing
     def completedefault(                            # type: ignore
-            self, word: str, line: str, begidx: int, endidx: int) -> List[str]:
+            self, word: str, line: str, begidx: int, endidx: int) -> Argslist:
         'Perform filename completion on "word".'
+        cmd         = line.split()[0]
         sep         = word.rfind('/')
         dir, word   = word[:sep + 1], word[sep + 1:]
-        cmd         = line.split()[0]
-        remote      = cmd in self.remote_cmds
-        dir_cmd     = cmd in ['cd', 'mkdir', 'rmdir', 'mount', 'lcd']
-        if remote:
+        if (cmd == 'set' and 'prompt' in line) or cmd == 'echo':
+            # Complete on board params, eg: set prompt="{de[TAB]
+            sep = word.rfind('{')
+            prefix, word = word[:sep + 1], word[sep + 1:]
+            return (
+                [prefix + k for k in self.params if k.startswith(word)]
+                if sep >= 0 else [])
+        elif cmd in self.noglob_cmds:
+            # No filename completion for this command
+            return []
+        elif cmd in self.remote_cmds:
             # Execute filename completion on the board.
             lsdir = self.board.ls_dir(dir or '.') or []
             files = [
@@ -929,7 +954,9 @@ class RemoteCmd(cmd.Cmd):
                 return []
 
         # Return all filenames or only directories if requested
-        return [f for f in files if f.endswith('/')] if dir_cmd else files
+        return (
+            [f for f in files if f.endswith('/')]
+            if cmd in self.dir_cmds else files)
 
     def glob_remote(self, word: str) -> Iterable[str]:
         'Expand glob patterns in the filename part of "path".'
@@ -943,27 +970,29 @@ class RemoteCmd(cmd.Cmd):
             for f in files
             if str(f)[0] != '.' and fnmatch.fnmatch(str(f), word))
 
-    def glob(self, args: List[str]) -> Iterable[str]:
+    def glob(self, args: Argslist) -> Iterable[str]:
         remote_glob = args[0] in self.remote_cmds
+        no_glob = args[0] in self.noglob_cmds
         yield args[0]
         for arg in args[1:]:
             if arg:
                 at_least_one = False
-                for f in (self.glob_remote(arg) if remote_glob else
-                          glob.iglob(arg)):
-                    at_least_one = True
-                    yield f
+                if not no_glob:
+                    for f in (self.glob_remote(arg) if remote_glob else
+                              glob.iglob(arg)):
+                        at_least_one = True
+                        yield f
                 if not at_least_one:
                     yield arg   # if no match - just return the glob pattern
 
-    def split(self, line: str) -> List[str]:
+    def split(self, line: str) -> Argslist:
         'Split the command line into tokens.'
         # punctuation_chars=True ensures semicolons can split commands
         lex = shlex.shlex(line, None, True, True)
         lex.wordchars += ':'
         return list(lex)
 
-    def expand_alias(self, args: List[str]) -> List[str]:
+    def expand_alias(self, args: Argslist) -> Argslist:
         if not args or args[0] not in self.alias:
             return args
 
@@ -983,13 +1012,13 @@ class RemoteCmd(cmd.Cmd):
         print(new_args)
         return new_args
 
-    def process_args(self, args: List[str]) -> List[str]:
+    def process_args(self, args: Argslist) -> Argslist:
         'Expand aliases, macros and glob expansiions.'
 
         # Get the first command if multiple commands on one line.
         # Push the rest of the args back onto the command queue
         # eg: ls /lib ; rm /main.py
-        def split_semicolons(args: List[str]) -> List[str]:
+        def split_semicolons(args: Argslist) -> Argslist:
             # Split argslist by semicolons
             if ';' not in args:
                 return args
@@ -1009,7 +1038,7 @@ class RemoteCmd(cmd.Cmd):
         args = split_semicolons(args)   # Alias may expand to include ';'
 
         # Expand mpremote commandline macros
-        do_command_expansion(args)  # From mpremote.main
+        mpremote.main.do_command_expansion(args)  # From mpremote.main
         for i, arg in enumerate(args):
             # Insert ';'s if necessary to split up run-together commands
             # Eg: exec "x=2" eval "x**2" -> exec "x=2" ; eval "x**2"
@@ -1040,7 +1069,7 @@ class RemoteCmd(cmd.Cmd):
             self.rcfile_loaded = True
             # Remove the mpremote aliases which override mpr-thing commands
             for k in ['cat', 'ls', 'cp', 'rm', 'mkdir', 'rmdir', 'df']:
-                del(_command_expansions[k])  # From mpremote.main
+                del(mpremote.main._command_expansions[k])
         if not self.multi_cmd_mode:
             self.prompt = \
                 self.colour(self.prompt_colour, self.base_prompt) + '%'
@@ -1095,6 +1124,7 @@ class RemoteCmd(cmd.Cmd):
                 super().cmdloop(intro)
             except KeyboardInterrupt:
                 stop = False
+                print()
             except Exception as err:
                 print("Error in command:", err)
                 stop = False

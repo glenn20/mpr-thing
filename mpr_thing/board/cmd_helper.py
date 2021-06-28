@@ -1,11 +1,6 @@
-#!/usr/bin/env python3
-
-# Copyright (c) 2021 @glenn20
 # MIT License
-
+# Copyright (c) 2021 @glenn20
 # This file contains code to be loaded onto the micropython board
-
-# vscode-fold=2
 
 import uos, gc
 
