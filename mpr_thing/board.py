@@ -12,15 +12,17 @@ from __future__ import annotations
 import os, re, stat
 from pathlib import PurePosixPath, Path
 from typing import (
-    Any, Dict, Sequence, Union, Iterable, Callable, Optional, List, Tuple)
+    Any, Dict, Sequence, Union, Iterable, Callable, Optional, Tuple)
 
 from mpremote.pyboard import Pyboard, stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended
 
 from .catcher import catcher, raw_repl as real_raw_repl
 
-Writer   = Callable[[bytes], None]  # A type alias for console write functions
-PathLike = Union[str, os.PathLike]
+# Type aliases
+Writer    = Callable[[bytes], None]     # Type of the console write functions
+PathLike  = Union[str, os.PathLike]     # Accepts str or Pathlib for filenames
+Filenames = Union[Iterable[str], str]   # Accept single filenames as file list
 
 
 # Paths on the board are always Posix paths even if local host is Windows.
@@ -82,7 +84,7 @@ class Board:
     cmd_hook_code = b"Override this with contents of 'board/cmd_helper.py'."
 
     # Apply basic compression on hook code - (from mpremote tool).
-    HookSubsType = List[Tuple[bytes, bytes, Dict[str, int]]]
+    HookSubsType = Sequence[Tuple[bytes, bytes, Dict[str, int]]]
     hook_subs: HookSubsType = [
         (b" *#.*$",          b"",     {'flags': re.MULTILINE}),
         (b"    ",            b" ",    {}),
@@ -103,7 +105,7 @@ class Board:
     def __init__(
             self,
             # Pylance doesn't recognise PyboardExtended as subclass of Pyboard
-            pyb:    Union[PyboardExtended, Pyboard],
+            pyb:    PyboardExtended | Pyboard,
             writer: Writer) -> None:
         """Construct a "Board" instance.
 
@@ -138,7 +140,7 @@ class Board:
         'Load the __helper class and methods onto the micropython board.'
         self.exec(self.cmd_hook_code)
 
-    def write(self, response: Union[bytes, str]) -> None:
+    def write(self, response: bytes | str) -> None:
         'Call the console writer for output (convert "str" to "bytes").'
         if response:
             if not isinstance(response, bytes):
@@ -157,7 +159,7 @@ class Board:
     # Execute stuff on the micropython board
     def exec_(
             self,
-            code:       Union[str, bytes],
+            code:       bytes | str,
             reader:     Optional[Writer] = None,
             silent:     bool = False,
             reraise:    bool = False
@@ -178,7 +180,7 @@ class Board:
         response = self.exec_(code, silent=silent, reraise=reraise)
         return eval(response)
 
-    def exec(self, code: Union[str, bytes]) -> None:
+    def exec(self, code: bytes | str) -> None:
         self.exec_(code, stdout_write_bytes)
 
     def cat(self, filename: str) -> None:
@@ -191,7 +193,7 @@ class Board:
 
     def mv(
             self,
-            filenames:  Union[Iterable[str], str],
+            filenames:  Filenames,
             dest:       str,
             opts:       str
             ) -> None:
@@ -204,7 +206,7 @@ class Board:
 
     def rm(
             self,
-            filenames:  Union[Iterable[str], str],
+            filenames:  Filenames,
             opts:       str
             ) -> None:
         if isinstance(filenames, str):
@@ -247,10 +249,10 @@ class Board:
 
     def ls_files(
             self,
-            filenames:  Union[Iterable[str], str]
+            filenames:  Filenames
             ) -> Iterable[RemotePath]:
         'Return a list of files (RemotePath) on board for list of filenames.'
-        files: List[RemotePath] = []
+        files: list[RemotePath] = []
         if isinstance(filenames, str):
             filenames = [filenames]
         for f in filenames:
@@ -272,7 +274,7 @@ class Board:
             ) -> Optional[Iterable[RemotePath]]:
         'Return a list of files (RemotePath) on board in "dir".'
         files = None
-        with catcher(self.write, silent=False):
+        with catcher(self.write):
             files = [
                 RemotePath(dir, f).set_modes(stat)
                 for f, *stat in self.eval(
@@ -287,21 +289,19 @@ class Board:
 
     def ls(
             self,
-            filenames:  Union[Iterable[str], str],
+            files:      Filenames,
             opts:       str
             ) -> Iterable[Tuple[str, Iterable[RemotePath]]]:
         "Return a list of files on the board."
-        recursive = 'R' in opts
+        recursive  = 'R' in opts
         long_style = 'l' in opts
-        if isinstance(filenames, str):
-            filenames = [filenames]
-        filenames = list(filenames)
-        filenames.sort
-        files = self.ls_files(filenames)
-        yield ('', [f for f in files if f.is_file()])
+        files = [files] if isinstance(files, str) else list(files)
+        files.sort
+        filelist = self.ls_files(files)
+        yield ('', [f for f in filelist if f.is_file()])
 
         dirs = (
-            list(d for d in files if d.is_dir()) if filenames else
+            list(d for d in filelist if d.is_dir()) if files else
             [RemotePath('.')])
         for i, dir in enumerate(dirs):
             subfiles = self.ls_dir(str(dir), long_style)
@@ -316,7 +316,7 @@ class Board:
 
     def cp(
             self,
-            filenames:  Union[Iterable[str], str],
+            filenames:  Filenames,
             dest:       str,
             opts:       str
             ) -> None:
@@ -331,7 +331,7 @@ class Board:
             if str(f) == str(dest_f):
                 print('%cp: Skipping: source is same as dest:', files[0])
                 return
-            if not f.is_dir() and not dest_f.is_dir():
+            elif f.is_file() and (dest_f.is_file() or not dest_f.exists()):
                 # cp file1 file2
                 self.exec(
                     '_helper.cp_file("{}","{}","{}")'.format(
@@ -346,6 +346,8 @@ class Board:
                         str(f) + '/.',  # Ugly hack to make it work
                         str(dest_f), opts))
                 return
+
+        # Copy the files and directories to dest
         self.exec(
             '_helper.cp({},"{}","{}")'.format(
                 [str(f) for f in files], str(dest_f), opts))
@@ -390,7 +392,7 @@ class Board:
 
     def get(
             self,
-            filenames:  Union[Iterable[str], str],
+            filenames:  Filenames,
             dest:       PathLike,
             opts:       str = ''
             ) -> None:
@@ -463,7 +465,7 @@ class Board:
 
     def put(
             self,
-            filenames:  Union[Iterable[str], str],
+            filenames:  Filenames,
             dest:       PathLike,
             opts:       str = ''
             ) -> None:
