@@ -5,10 +5,14 @@ handing exceptions.
 # Copyright (c) 2021 @glenn20
 #
 
-from traceback import print_exc as traceback_print_exc
+# For python<3.10: Allow type1 | type2 instead of Union[type1, type2]
+from __future__ import annotations
+
+
+from traceback import print_exc
 from mpremote.pyboard import PyboardError, Pyboard
 from mpremote.pyboardextended import PyboardExtended
-from typing import (Any, Callable, Optional, Union)
+from typing import (Any, Callable, Optional)
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
@@ -39,7 +43,7 @@ class catcher:
     def __exit__(self, exc_type: Any, value: Exception, tr: Any) -> bool:
         if exc_type == KeyboardInterrupt:
             catcher.exception = value
-            return False
+            return False    # Re-raise the exception
         elif exc_type in (OSError, FileNotFoundError):
             if not self.silent:
                 self.write_fn("{}: {}\r\n".format(
@@ -50,8 +54,8 @@ class catcher:
                 self.write_fn(b"Error:: ")
                 for arg in value.args:
                     self.write_fn(bytes("{}".format(arg), 'utf8'))
-                traceback_print_exc()
-        return True
+                print_exc()
+        return True         # Continue execution
 
 
 # A context manager for the raw_repl - not re-entrant
@@ -61,16 +65,15 @@ class raw_repl():
 
     Eg:
         from catcher import raw_repl
-        with raw_repl(pyboard, write_fn, reraise=True):
+        with raw_repl(pyboard, write_fn):
             board.exec("machine.Pin(4).value(1)")
     """
     def __init__(
             self,
-            pyb:        Union[PyboardExtended, Pyboard],
+            pyb:        PyboardExtended | Pyboard,
             write_fn:   Writer,
             soft_reset: bool = False,
-            silent:     bool = False,
-            reraise:    bool = False
+            silent:     bool = False
             ):
         """Constructor
 
@@ -79,16 +82,14 @@ class raw_repl():
             write_fn: A function (taking bytes) to print exception messages.
             soft_reset=False: Reset micropython before entering raw repl.
             silent=False: Suppress exception reports.
-            reraise=False: Re-raise a PyboardError exception after reporting.
         """
         self.pyb            = pyb
         self.write_fn       = write_fn
         self.soft_reset     = soft_reset
         self.silent         = silent
-        self.reraise        = reraise
         self.restore_repl   = False
 
-    def __enter__(self) -> Union[PyboardExtended, Pyboard]:
+    def __enter__(self) -> PyboardExtended | Pyboard:
         # We can nest raw_repl() managers - only enter raw repl if necessary
         if not self.pyb.in_raw_repl:
             self.restore_repl = True
@@ -120,5 +121,5 @@ class raw_repl():
                     self.write_fn(value.args[2])
                 else:           # Others just include a single message
                     self.write_fn(value.args[0].encode())
-            return self.reraise
+            return True
         return False

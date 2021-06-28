@@ -4,8 +4,6 @@ PyBoardExtended interface to a micropython board (from the mpremote tool).
 # Copyright (c) 2021 @glenn20
 # MIT License
 
-# vscode-fold=2
-
 # For python<3.10: Allow method type annotations to reference enclosing class
 from __future__ import annotations
 
@@ -150,11 +148,10 @@ class Board:
     def raw_repl(
             self,
             silent:     bool = False,
-            reraise:    bool = False
             ) -> real_raw_repl:
         'Return a context manager for the micropython raw repl.'
         return real_raw_repl(
-            self.pyb, self.write, silent=silent, reraise=reraise)
+            self.pyb, self.write, silent=silent)
 
     # Execute stuff on the micropython board
     def exec_(
@@ -162,11 +159,10 @@ class Board:
             code:       bytes | str,
             reader:     Optional[Writer] = None,
             silent:     bool = False,
-            reraise:    bool = False
             ) -> bytes:
         'Execute some code on the micropython board.'
         response: bytes = b''
-        with self.raw_repl(silent=silent, reraise=reraise):
+        with self.raw_repl(silent=silent):
             response = self.pyb.exec_(code, reader)
         return response
 
@@ -174,10 +170,9 @@ class Board:
             self,
             code:       str,
             silent:     bool = False,
-            reraise:    bool = False
             ) -> Any:
         # TODO: Use json for return values from board - for safety
-        response = self.exec_(code, silent=silent, reraise=reraise)
+        response = self.exec_(code, silent=silent)
         return eval(response)
 
     def exec(self, code: bytes | str) -> None:
