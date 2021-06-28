@@ -1,10 +1,9 @@
 """Context managers for handling the micropython "raw_repl" and
 handing exceptions.
 """
-# Copyright (c) 2021 @glenn20
 # MIT License
-
-# vscode-fold=2
+# Copyright (c) 2021 @glenn20
+#
 
 from traceback import print_exc as traceback_print_exc
 from mpremote.pyboard import PyboardError, Pyboard
@@ -107,6 +106,9 @@ class raw_repl():
             self, exc_type: Any, value: Exception, traceback: Any) -> bool:
         # Only exit the raw_repl if we entered it with this instance
         if self.restore_repl and self.pyb.in_raw_repl:
+            if exc_type == KeyboardInterrupt:
+                # ctrl-C twice: interrupt any running program
+                self.pyb.serial.write(b"\r\x03\x03")
             self.pyb.exit_raw_repl()
             self.pyb.read_until(4, b">>> ")
         if exc_type == PyboardError:
