@@ -738,6 +738,8 @@ class RemoteCmd(cmd.Cmd):
 
     def save_options(self) -> None:
         'Save the options in a startup file.'
+        if not hasattr(self, 'options_loaded') or not self.options_loaded:
+            return  # Don't save if we are reading from the options file
         with open(OPTIONS_FILE if os.path.isfile(OPTIONS_FILE) else
                   os.path.expanduser('~/' + OPTIONS_FILE), 'w') as f:
             f.write(

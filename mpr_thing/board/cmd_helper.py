@@ -114,8 +114,6 @@ class _MagicHelper:
                     print('Can not remove directory "{}": Use "%rm -r"'
                         .format(f))
 
-    import gc
-
     def pr(self):   # Return some dynamic values for the command prompt
         print(
             '("',uos.getcwd(),'",',gc.mem_alloc(),',',gc.mem_free(),')',

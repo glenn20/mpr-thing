@@ -28,11 +28,14 @@ This tool uses Damien's `mpremote` tool and adds:
     directory on board.
   - `%ls -lR /lib`: colourised listing of files on the board (uses your
     color-ls settings).
-  - `%cat boot.py`, `%edit main.py`, `%mv f1.py f2.py`,
-    `%cp -r /lib /lib2`, `%rm -r /lib2`,
-  - `%put app/ file.py`, `%put app/ :/lib`, `%get /app/ /lib/ main.py`,
+  - `%cat boot.py`
   - `%edit /main.py`: copy file from board, edit (using ${EDITOR:-/bin/vi})
     and copy back.
+  - `%mv f1.py f2.py`, `%cp -r /lib /lib2`, `%rm -r /lib2`: Copy and move
+    files around on the board.
+  - `%put app/ file.py`, `%put app/ :/lib`, `%get /app/ /lib/ main.py`, `%get
+    /lib/* :local_dir`: Copy files to/from the micropython board from/to the
+    local computer.
   - `%cd /lib`, `%pwd`, `%mkdir /app`, `%rmdir /app`
   - `%lcd ..`: change the working directory on the local host (same as `!cd
     ..`).
@@ -47,7 +50,10 @@ This tool uses Damien's `mpremote` tool and adds:
     - You can use `{}` or `{2}` format specifiers to consume arguments when
       you use the alias: eg: `%connect ssid password`. Any arguments which are
       not consumed by format specifiers will be added to the command after
-      expanding the alias, eg: `%ll /lib`.
+      expanding the alias, eg: `%ll /lib`. Use `unalias connect` to delete the
+      "connect" alias.
+  - `%echo "Python files on {name}/{pwd}/:" *.py`: Print a message to the
+    user.
   - `%help`, `%?`, `%help command`: print available magic commands or help on
     command.
   - `;` is used to separate commands on one line: eg. `%cd /app; ls *.py`
@@ -85,4 +91,5 @@ micropython and the `%magic` commands have separate command histories.
 I know that there is no paucity of very cool terminal apps for talking to your
 micropython boards. I like the mpremote approach but just wanted to add some
 convenience commands and found it easier to merge in some other stuff from
-some old cli tools I have. I really didn't mean to re-invent the wheel.
+some old cli tools I have. In that sense, this tool scratches a particular
+itch of mine - I really didn't mean to re-invent the wheel.
