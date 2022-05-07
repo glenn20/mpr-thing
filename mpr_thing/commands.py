@@ -671,6 +671,11 @@ class RemoteCmd(cmd.Cmd):
         added to the command after expanding the alias, eg:
             %ll /lib
         """
+        if not args:
+            for k, v in self.alias.items():
+                print(f'alias "{k}"="{v}"')
+            return
+
         for arg in args:
             alias, value = arg.split('=', maxsplit=1)
             if not alias or not value:
