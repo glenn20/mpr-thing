@@ -47,9 +47,10 @@ def cursor_column(
                     break
                 time.sleep(0.01)
         c = console_in.readchar()
-        buf += c
-        if c == b'R':               # Wait for end of escape sequence
-            break
+        if c is not None:
+            buf += c
+            if c == b'R':           # Wait for end of escape sequence
+                break
     else:
         return -1
 
@@ -74,20 +75,14 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
     prompt = b"\n>>> "
 
     while True:
-        if isinstance(console_in, ConsolePosix):
-            # TODO pyb.serial might not have fd
-            select.select(
-                [console_in.infd, pyb.serial.fd], [], [])
-        else:
-            while not (console_in.inWaiting() or pyb.serial.inWaiting()):
-                time.sleep(0.01)
+        console_in.waitchar(pyb.serial)
         c = console_in.readchar()
         if c:
             if c == b"\x1d":  # ctrl-], quit
                 break
             elif c == b"\x04":  # ctrl-D
                 # do a soft reset and reload the filesystem hook
-                pyb.soft_reset_with_mount(console_out_write)
+                pyb.write_ctrl_d(console_out_write)
                 beginning_of_line = True
                 remote.reset_hooks()
             elif c == b"\x12":  # ctrl-R
@@ -97,17 +92,17 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
                 remote.reset_hooks()
             elif c == b"\x0a" and code_to_inject is not None:
                 pyb.serial.write(code_to_inject)    # ctrl-j, inject code
-            elif c == b"\x0b":  # ctrl-k, inject script
-                console_out_write(
+            elif c == b"\x0b" and file_to_inject is not None:
+                console_out_write(                  # ctrl-k, inject script
                     bytes("Injecting %s\r\n" % file_to_inject, "utf8"))
                 pyb.enter_raw_repl(soft_reset=False)
                 with open(file_to_inject, "rb") as f:
                     pyfile = f.read()
                 try:
                     pyb.exec_raw_no_follow(pyfile)
-                except PyboardError as err:
+                except PyboardError as er:
                     console_out_write(b"Error:\r\n")
-                    console_out_write(repr(err).encode('utf-8'))
+                    console_out_write(repr(er).encode('utf-8'))
                 pyb.exit_raw_repl()
                 beginning_of_line = True
             elif (c == b"!" and at_prompt  # Magic sequence if at start of line
