@@ -96,6 +96,9 @@ class _MagicHelper:
             if 'v' in opts: print(f2)
             if 'n' not in opts: uos.rename(f, f2)
 
+    def complete(self, base, word):
+        print([w for w in (dir(base) if base else dir()) if w.startswith(word)])
+
     # TODO: see if chdir through tree reduces heap allocation
     def rm(self, files, opts):
         for f in files:

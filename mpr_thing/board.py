@@ -178,6 +178,12 @@ class Board:
     def exec(self, code: bytes | str) -> None:
         self.exec_(code, stdout_write_bytes)
 
+    def complete(self, word: str) -> list[str]:
+        'Complete the python name on the board.'
+        words = [None] + word.rsplit('.', 1)  # Split module and class names
+        completions: list[str] = self.eval(f'_helper.complete({words[-2]}, "{words[-1]}")')
+        return completions
+
     def cat(self, filename: str) -> None:
         'List the contents of the file "filename" on the board.'
         with self.raw_repl():
