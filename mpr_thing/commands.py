@@ -13,7 +13,7 @@ import os, re, readline, locale, time, cmd, shutil, traceback
 import json, inspect, shlex, glob, fnmatch, subprocess, itertools
 from pathlib import Path
 from typing import (
-    Any, Dict, List, Iterable, Callable, Optional, Tuple, Union)
+    Any, Dict, List, Iterable, Optional, Union)
 
 import mpremote.main
 
@@ -34,18 +34,6 @@ locale.setlocale(locale.LC_ALL, '')
 HISTORY_FILE = '~/.mpr-thing.history'
 OPTIONS_FILE = '.mpr-thing.options'
 RC_FILE      = '.mpr-thing.rc'
-
-
-def partition(
-        items: Iterable[Any],
-        predicate: Callable[[Any], bool]
-        ) -> Tuple[list[Any], list[Any]]:
-    a: list[Any]
-    b: list[Any]
-    a, b = [], []
-    for item in items:
-        (a if predicate(item) else b).append(item)
-    return a, b
 
 
 class AnsiColour:
@@ -218,6 +206,7 @@ class LocalCmd(cmd.Cmd):
 
 
 class RemoteCmd(cmd.Cmd):
+    'A class to run commands on the micropython board.'
     base_prompt: str = '\r>>> '
     doc_header: str = (
         'Execute "%magic" commands at the micropython prompt, eg: %ls /\n'
@@ -439,12 +428,14 @@ class RemoteCmd(cmd.Cmd):
             opts, *args = args
         self.load_board_params()
         pwd: str = self.params['pwd']
-        remote, args = partition(args, lambda x: self.is_remote(x, pwd))
-        # Remove files which are on a remote mounted filesystem
-        for filename in remote:
-            print("get: skipping /remote mounted folder:", filename)
-        dest = args.pop()[1:] if args[-1].startswith(':') else '.'
-        self.board.get(args, dest, opts + 'rv')
+        files: List[str] = []
+        for f in args:
+            if self.is_remote(f, pwd):
+                print("get: skipping /remote mounted folder:", f)
+            else:
+                files.append(f)
+        dest = files.pop()[1:] if files[-1].startswith(':') else '.'
+        self.board.get(files, dest, opts + 'rv')
 
     def do_put(self, args: Argslist) -> None:
         """
