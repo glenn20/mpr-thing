@@ -597,8 +597,11 @@ class RemoteCmd(cmd.Cmd):
         FileSystem:
             %mount [folder]   # If no folder specified use '.'"""
         # Don't use relative paths - these can change if we "!cd .."
+        opts = ''
+        if args and args[0][0] == "-":
+            opts, *args = args
         path = args[0] if args else '.'
-        self.board.mount(path)
+        self.board.mount(path, opts)
         self.write(
             'Mounted local folder {} on /remote\r\n'
             .format(args).encode('utf-8'))

@@ -225,14 +225,14 @@ class Board:
         with self.raw_repl():
             self.pyb.fs_rmdir(filename)
 
-    def mount(self, directory: str) -> None:
+    def mount(self, directory: str, opts: str = False) -> None:
         path = os.path.realpath(directory)
         if not os.path.isdir(path):
             print("%mount: No such directory:", path)
             return
         if isinstance(self.pyb, PyboardExtended):
             with self.raw_repl():
-                self.pyb.mount_local(path)
+                self.pyb.mount_local(path, 'l' in opts)
 
     def umount(self) -> None:
         'Unmount any Virtual Filesystem mounted at "/remote" on the board.'
