@@ -8,7 +8,7 @@ class _MagicHelper:
 
     @staticmethod
     def path(a, b):
-        return '/'.join((a, b))
+        return '/'.join((a, b)) if a != "/" else "/" + b
 
     @staticmethod
     def is_dir(mode):
@@ -18,11 +18,11 @@ class _MagicHelper:
     def basename(f):
         return f[f.rfind('/')+1:]
 
-    def ls(self, dir, long):
+    def ls(self, dirr, long):
         print("[", end="")
-        for f in uos.ilistdir(dir):
+        for f in uos.ilistdir(dirr):
             if long:
-                s = uos.stat(self.path(dir, f[0]))
+                s = uos.stat(self.path(dirr, f[0]))
                 print('("',f[0],'",',s[0],',',s[6],',',s[8],')',sep="",end=",")
             else:
                 print('("',f[0],'",',f[1],')',sep="",end=",")
@@ -41,9 +41,9 @@ class _MagicHelper:
             n = f1.readinto(self._buf)
         f1.close(); f2.close()
 
-    def cp_dir(self, dir, dest, opts):
+    def cp_dir(self, dirr, dest, opts):
         if 'r' not in opts:
-            print('Can not copy directory', dir, ': Use "%cp -r"')
+            print('Can not copy directory', dirr, ': Use "%cp -r"')
             return
         dest = self.path(dest, self.basename(dir))
         try:
