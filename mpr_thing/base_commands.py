@@ -9,24 +9,18 @@
 # Allow list[str] instead of List[str]
 from __future__ import annotations
 
-import os, re, readline, locale, time, cmd, shutil, traceback
-import json, inspect, shlex, glob, fnmatch, subprocess, itertools
-from pathlib import Path
-from typing import (
-    Any, Dict, List, Iterable, Optional, Union)
+import os, re, readline, locale, time, cmd, shutil
+import json, inspect, shlex, glob, fnmatch, itertools
+from typing import Any, Iterable, Optional
 
 import mpremote.main
 
 from .catcher import catcher
 from .board import RemotePath, Board
-
-from colorama import init as colorama_init  # For ansi colour on Windows
+from .colour import AnsiColour
 
 # Type alias for the list of command arguments
-Argslist = List[str]
-
-# Ensure colour works on Windows terminals.
-colorama_init()
+Argslist = list[str]
 
 # Set locale for file listings, etc.
 locale.setlocale(locale.LC_ALL, '')
@@ -36,177 +30,7 @@ OPTIONS_FILE = '.mpr-thing.options'
 RC_FILE      = '.mpr-thing.rc'
 
 
-class AnsiColour:
-    'A class to colourise text with ANSI escape sequences'
-    def __init__(self, enable: bool = True):
-        self._enable = enable
-        # Load the colour specification for the "ls" command
-        spec = (
-            os.getenv('LS_COLORS') or
-            subprocess.check_output(
-                'eval `dircolors`; echo -n $LS_COLORS',
-                shell=True, text=True) or
-            'di=01;34:*.py=01;36:').rstrip(':')  # A fallback color spec
-        self.spec = {
-            k.lstrip('*'): v for k, v in
-            (c.split('=') for c in spec.split(':'))} if spec else {}
-        if '.py' not in self.spec:     # A fallback colour for *.py files
-            self.spec['.py'] = '01;36'
-        # Dict of ansi colour specs by name
-        self.colour = {  # ie: {'black': '00;30', ... 'white': '00;37'}
-            name: '00;3{}'.format(i)
-            for i, name in enumerate((
-                'black', 'red', 'green', 'yellow',
-                'blue', 'magenta', 'cyan', 'white'))}
-        self.colour.update(dict(   # Add the bright/bold colour variants
-            ('bold-' + x, '01;' + spec[3:])
-            for x, spec in self.colour.items()))
-        self.colour['reset'] = '00'
-        self.colour['normal'] = '0'
-        self.colour['bold'] = '1'
-        self.colour['underline'] = '4'
-        self.colour['reverse'] = '7'
-
-    def enable(self, enable: bool = True) -> None:
-        """Enable or disable colourising of text with ansi escapes."""
-        self._enable = enable
-
-    def ansi(self, spec: str, bold: Optional[bool] = None) -> str:
-        return '\x1b[{}m'.format(self.bold(self.colour.get(spec, spec), bold))
-
-    def colourise(
-            self, spec: str, word: str,
-            bold: Optional[bool] = None, reset: str = 'reset') -> str:
-        """Return "word" colourised according to "spec", which may be a colour
-        name (eg: 'green') or an ansi sequence (eg: '00;32')."""
-        if not spec or not self._enable:
-            return word
-        spec, reset = (
-            self.colour.get(spec, spec),
-            self.colour.get(reset, reset))
-        spec = self.bold(spec, bold)
-        return '\x1b[{}m{}\x1b[{}m'.format(spec, word, reset)
-
-    def __call__(
-            self, spec: str, word: str,
-            bold: Optional[bool] = None, reset: str = 'reset') -> str:
-        """Return "word" colourised according to "spec", which may be a colour
-        name (eg: 'green') or an ansi sequence (eg: '00;32')."""
-        return self.colourise(spec, word, bold, reset)
-
-    def bold(self, spec: str, bold: Optional[bool] = True) -> str:
-        """Set the "bold" attribute in an ansi colour "spec" if "bold" is
-        True, or unset the attribute if "bold" is False."""
-        spec = self.colour.get(spec, spec)
-        return (
-            spec if bold is None else
-            (spec[:1] + ('1' if bold else '0') + spec[2:]))
-
-    def pick(self, file: str, bold: Optional[bool] = None) -> str:
-        """Pick a colour for "file" according to the "ls" command."""
-        spec = (
-            self.spec.get('di', '') if file[-1] == '/' else
-            self.spec.get(os.path.splitext(file)[1], ''))
-        return self.bold(spec, bold)
-
-    # Return a colour decorated filename
-    def file(self, file: str, dir: bool = False, reset: str = '0') -> str:
-        """Return "file" colourised according to the colour "ls" command."""
-        return (
-            self.colourise(self.pick(file), file, reset=reset) if not dir else
-            self.dir(file, reset=reset))
-
-    # Return a colour decorated directory
-    def dir(self, file: str, reset: str = '0') -> str:
-        """Return "dir" colourised according to the colour "ls" command."""
-        return self.colourise(self.spec.get('di', ''), file, reset=reset)
-
-    def colour_stack(self, text: str) -> str:
-        """Change the way colour reset sequence ("\x1b[0m") works.
-        Change any reset sequences to pop the colour stack rather than
-        disabling colour altogether."""
-        stack = ['0']
-
-        def ansistack(m: Any) -> Any:
-            # Return the replacement text for the reset sequence
-            colour: str = m.group(2)
-            if len(colour) == 5:   # If this is not a colour reset sequence
-                stack.append(colour)            # Save on the colour stack
-            elif colour == '1':   # Turn on bold
-                stack[-1] = '01;' + stack[-1][3:]
-            elif colour == '0':   # Turn off bold
-                stack[-1] = '00;' + stack[-1][3:]
-                colour = stack[-1]
-            elif colour == '00':   # If this is a colour reset sequence
-                if len(stack) > 0: stack.pop()  # Pop the stack first
-                colour = stack[-1]      # Replace with top colour on stack
-            return '\x1b[' + colour + 'm'
-
-        return (re.sub('(\x1b\\[)([0-9;]+)(m)', ansistack, text) +
-                (self.ansi('reset') if stack else ''))  # Force reset at end
-
-
-class LocalCmd(cmd.Cmd):
-    'A class to run shell commands on the local system.'
-    prompt = '\r>>> !'
-    doc_header = """Execute a shell command on the local host, eg:
-                    !ls
-                    !cd ..
-                 """
-
-    # Completion of filenames on the local filesystem
-    def completedefault(  # type: ignore
-            self, match: str, line: str,
-            begidx: int, endidx: int) -> Argslist:
-        'Return a list of files on the local host which start with "match".'
-        try:
-            sep = match.rfind('/')
-            d, match = match[:sep + 1], match[sep + 1:]
-            _, dirs, files = next(os.walk(d or '.'))
-            files = [d + f for f in files if f.startswith(match)]
-            files.extend(d + f + '/' for f in dirs if f.startswith(match))
-            files.sort()
-            return files
-        except Exception:
-            traceback.print_exc()
-            return []
-
-    # Completion of directories on the local filesystem
-    def complete_cd(
-            self, text: str, line: str, begidx: int, endidx: int) -> Argslist:
-        'Return a list of directories which start with "match".'
-        return [
-            f for f in self.completedefault(text, line, begidx, endidx)
-            if f.endswith('/')]
-
-    def do_cd(self, line: str) -> None:
-        """Change the current directory on the local host:
-            !cd ..
-        This will call os.chdir() instead of executing in a sub-shell."""
-        for arg in shlex.split(line):
-            os.chdir(arg)
-        print(os.getcwd())
-
-    def default(self, line: str) -> bool:
-        os.system(line)  # TODO: Use interactive shell - subprocess
-        return True
-
-    def emptyline(self) -> bool:
-        return True
-
-    def postcmd(self, stop: Any, line: str) -> bool:
-        return True
-
-    def cmdloop(self, intro: Optional[str] = None) -> None:
-        'Trap exceptions from the Cmd.cmdloop().'
-        try:
-            super().cmdloop(intro)
-        except Exception as err:
-            print(err)
-
-
-class RemoteCmd(cmd.Cmd):
-    'A class to run commands on the micropython board.'
+class Commands(cmd.Cmd):
     base_prompt: str = '\r>>> '
     doc_header: str = (
         'Execute "%magic" commands at the micropython prompt, eg: %ls /\n'
@@ -224,6 +48,12 @@ class RemoteCmd(cmd.Cmd):
         'eval', 'exec', 'alias', 'unalias', 'set')
 
     def __init__(self, board: Board):
+        self.colour             = AnsiColour()
+        self.multi_cmd_mode     = False
+        self.alias:  dict[str, str] = {}    # Command aliases
+        self.params: dict[str, Any] = {}    # Params we can use in prompt
+        self.names:  dict[str, str] = {}    # Map device unique_ids to names
+        self.lsspec: dict[str, str] = {}    # Extra colour specs for %ls
         self.board              = board
         self.colour             = AnsiColour()
         self.prompt             = self.base_prompt
@@ -231,10 +61,10 @@ class RemoteCmd(cmd.Cmd):
                                    ' ({free}){bold-blue}{pwd}> ')
         self.multi_cmd_mode     = False
         self.prompt_colour      = 'yellow'  # Colour of the short prompt
-        self.alias:  Dict[str, str] = {}    # Command aliases
-        self.params: Dict[str, Any] = {}    # Params we can use in prompt
-        self.names:  Dict[str, str] = {}    # Map device unique_ids to names
-        self.lsspec: Dict[str, str] = {}    # Extra colour specs for %ls
+        self.alias:  dict[str, str] = {}    # Command aliases
+        self.params: dict[str, Any] = {}    # Params we can use in prompt
+        self.names:  dict[str, str] = {}    # Map device unique_ids to names
+        self.lsspec: dict[str, str] = {}    # Extra colour specs for %ls
         readline.set_completer_delims(' \t\n>;')
 
         # Cmd.cmdloop() overrides completion settings in ~/.inputrc
@@ -265,14 +95,13 @@ class RemoteCmd(cmd.Cmd):
             return True
         return False
 
-    def write(self, response: Union[bytes, str]) -> None:
+    def write(self, response: bytes | str) -> None:
         'Call the console writer for output (convert "str" to "bytes").'
         if response:
             if not isinstance(response, bytes):
                 response = bytes(response, 'utf-8')
             self.board.writer(response)
 
-    # File commands
     def print_files(self, files: Iterable[RemotePath], opts: str) -> None:
         '''Print a file listing (long or short style) from data returned
         from the board.'''
@@ -312,347 +141,7 @@ class RemoteCmd(cmd.Cmd):
                         spaces[len(f.name):], sep='',
                         end=('' if n % cols and n < len(files) else '\n'))
 
-    def do_fs(self, args: Argslist) -> None:
-        """
-        Emulate the mpremote command line argument filesystem operations:
-            %fs [cat,ls,cp,rm,mkdir.rmdir] [args,...]"""
-        if not args:
-            print("%fs: No fs command provided.")
-            return
-        fs_cmd = {
-            'cat':      self.do_cat,
-            'ls':       self.do_ls,
-            'cp':       self.do_cp,
-            'rm':       self.do_rm,
-            'mkdir':    self.do_mkdir,
-            'rmdir':    self.do_rmdir,
-        }.get(args[0])
-        if not fs_cmd:
-            print('%fs: Invalid fs command:', args[0])
-            return
-        fs_cmd(args[1:])
-
-    def do_ls(self, args: Argslist) -> None:
-        """
-        List files on the board:
-            %ls [-[lR]] [file_or_dir1 ...]
-        The file listing will be colourised the same as "ls --color". Use the
-        "set" command to add or change the file listing colours."""
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
-        filelist = list(self.board.ls(args, opts))
-        linebreak = ''
-        for i, (dir, files) in enumerate(filelist):
-            # TODO: try: if dir and len(....
-            if i > 0 and len(filelist) > 2:     # Print the directory name
-                print('{}{}:'.format(linebreak, self.colour.dir(dir)))
-            if dir or files:
-                self.print_files(files, opts)
-                linebreak = '\n'
-
-    def do_cat(self, args: Argslist) -> None:
-        """
-        List the contents of files on the board:
-            %cat file [file2 ...]"""
-        for arg in args:
-            self.board.cat(arg)
-
-    def do_edit(self, args: Argslist) -> None:
-        """
-        Copy a file from the board, open it in your editor, then copy it back:
-            %edit file1 [file2 ...]
-        """
-        for arg in args:
-            import tempfile
-            with tempfile.TemporaryDirectory() as tmpdir:
-                basename = Path(arg).name
-                dest = Path(tmpdir) / basename
-                self.board.get(arg, tmpdir)
-                if 0 == os.system(
-                        f'eval ${{EDITOR:-/usr/bin/vi}} {str(dest)}'):
-                    self.board.put(str(dest), arg)
-
-    def do_touch(self, args: Argslist) -> None:
-        """
-        Create a file on the board:
-            %touch file [file2 ...]"""
-        for arg in args:
-            self.board.touch(arg)
-
-    def do_mv(self, args: Argslist) -> None:
-        """
-        Rename/move a file or directory on the board:
-            %mv old new
-            %mv *.py /app"""
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
-        dest = args.pop()
-        self.board.mv(args, dest, opts)
-
-    def do_cp(self, args: Argslist) -> None:
-        """
-        Make a copy of a file or directory on the board, eg:
-            %cp [-r] existing new
-            %cp *.py /app"""
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
-        dest = args.pop()
-        self.board.cp(args, dest, opts)
-
-    def do_rm(self, args: Argslist) -> None:
-        """
-        Delete files from the board:
-            %rm [-r] file1 [file2 ...]"""
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
-        self.board.rm(args, opts)
-
-    def is_remote(self, filename: str, pwd: str) -> bool:
-        # Is the file on a remote mounted filesystem.
-        return (
-            filename.startswith('/remote') or
-            (pwd.startswith('/remote') and not filename.startswith('/')))
-
-    def do_get(self, args: Argslist) -> None:
-        """
-        Copy a file from the board to a local folder:\n
-            %get [-n] file1 [file2 ...] [:dest]
-        If the last argument start with ":" use that as the destination folder.
-        """
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
-        self.load_board_params()
-        pwd: str = self.params['pwd']
-        files: List[str] = []
-        for f in args:
-            if self.is_remote(f, pwd):
-                print("get: skipping /remote mounted folder:", f)
-            else:
-                files.append(f)
-        dest = files.pop()[1:] if files[-1].startswith(':') else '.'
-        self.board.get(files, dest, opts + 'rv')
-
-    def do_put(self, args: Argslist) -> None:
-        """
-        Copy local files to the current folder on the board:
-            %put file [file2 ...] [:dest]
-        If the last argument start with ":" use that as the destination folder.
-        """
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
-        self.load_board_params()
-        pwd: str = self.params['pwd']
-        dest = args.pop()[1:] if args[-1].startswith(':') else pwd
-        if self.is_remote(dest, pwd):
-            print("%put: do not use on mounted folder:", pwd)
-            return
-        self.board.put(args, dest, opts + 'rv')
-
-    # Directory commands
-    def do_cd(self, args: Argslist) -> None:
-        """
-        Change the current directory on the board (with os.setpwd()):
-            %cd /lib"""
-        arg = args[0] if args else '/'
-        self.board.cd(arg)
-
-    def do_pwd(self, args: Argslist) -> None:
-        """
-        Print the current working directory on the board:
-            %pwd"""
-        if args:
-            print('pwd: unexpected args:', args)
-        print(self.board.pwd())
-
-    def do_lcd(self, args: Argslist) -> None:
-        """
-        Change the current directory on the local host:
-            %lcd ..
-        This is the same as:
-            !cd .."""
-        for arg in args:
-            try:
-                os.chdir(arg)
-                print(os.getcwd())
-            except OSError as err:
-                print(OSError, err)
-
-    def do_mkdir(self, args: Argslist) -> None:
-        """
-        Create a new directory on the board:
-            %mkdir /test"""
-        for arg in args:
-            self.board.mkdir(arg)
-
-    def do_rmdir(self, args: Argslist) -> None:
-        """
-        Delete/remove a directory on the board (if it is empty)
-            %rmdir /test"""
-        for arg in args:
-            self.board.rmdir(arg)
-
-    # Execute code on the board
-    def do_exec(self, args: Argslist) -> None:
-        """
-        Exec the python code on the board, eg.:
-            %exec print(34 * 35)
-        "\\n" will be substituted with the end-of-line character, eg:
-            %exec 'print("one")\\nprint("two")' """
-        self.board.exec(' '.join(args).replace('\\n', '\n'))
-
-    def do_eval(self, args: Argslist) -> None:
-        """
-        Eval and print the python code on the board, eg.:
-            %eval 34 * 35"""
-        self.board.exec('print({})'.format(' '.join(args)))
-
-    def do_run(self, args: Argslist) -> None:
-        """
-        Load and run local python files onto the board:
-            %run file1.py [file2.py ...]"""
-        for arg in args:
-            try:
-                with open(arg) as f:
-                    buf = f.read()
-            except OSError as err:
-                print(OSError, err)
-            else:
-                self.board.exec(buf)
-
-    def do_echo(self, args: Argslist) -> None:
-        """
-        Echo a command line after file pattern and parameter expansion.
-        Eg:
-           %echo "Files on {name}:" *.py
-           %echo "Free memory on {name} is {green}{free}{reset} bytes."
-
-        where parameters are the same as for "set prompt=" (See "help set").
-        Hit the TAB key after typing '{' to see all the available parameters.
-        """
-        opts, *args = args if args and args[0].startswith("-") else ('', *args)
-        print(
-            ' '.join(args).format_map(self.params),
-            end='' if 'n' in opts else '\n')
-
-    # Board commands
-    def do_uname(self, args: Argslist) -> None:
-        """
-        Print information about the hardware and software:
-            %uname"""
-        if args:
-            print('uname: unexpected args:', args)
-        self.load_board_params()
-        self.write((
-            'Micropython {nodename} ({unique_id}) '
-            '{version} {sysname} {machine}'
-            .format_map(self.params)).encode('utf-8') + b'\r\n')
-
-    def do_time(self, args: Argslist) -> None:
-        """
-        Set or print the time on the board:
-            %time set       : Set the RTC clock on the board from local time
-            %time set utc   : Set the RTC clock on the board from UTC time
-            %time           : Print the RTC clock time on the board"""
-        if args and args[0] == 'set':
-            from time import gmtime, localtime
-            t = gmtime() if 'utc' in args else localtime()
-            rtc_cmds = {
-                'esp8266': 'from machine import RTC;RTC().datetime({})',
-                'pyb':     'from pyb import RTC;RTC().datetime({})',
-                'pycom':   'from machine import RTC;_t={};'
-                           'RTC().init((_t[i] for i in [0,1,2,4,5,6]))',
-            }
-            self.load_board_params()
-            fmt = rtc_cmds.get(
-                self.params['sysname'],
-                'from machine import RTC;RTC().init({})')
-            self.board.exec(fmt.format(
-                (t.tm_year, t.tm_mon, t.tm_mday, 0,
-                    t.tm_hour, t.tm_min, t.tm_sec, 0)))
-        from time import asctime
-        with catcher(self.board.write):
-            t = self.board.eval('import utime;print(utime.localtime())')
-            self.write(asctime(
-                (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode('utf-8')
-                + b'\r\n')
-
-    def do_mount(self, args: Argslist) -> None:
-        """
-        Mount a local folder onto the board at "/remote" as a Virtual
-        FileSystem:
-            %mount [folder]   # If no folder specified use '.'"""
-        # Don't use relative paths - these can change if we "!cd .."
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
-        path = args[0] if args else '.'
-        self.board.mount(path, opts)
-        self.write(
-            'Mounted local folder {} on /remote\r\n'
-            .format(args).encode('utf-8'))
-        self.board.exec('print(uos.getcwd())')
-
-    def do_umount(self, args: Argslist) -> None:
-        """
-        Unmount any Virtual Filesystem mounted at \"/remote\" on the board:
-            %umount"""
-        if args:
-            print('umount: unexpected args:', args)
-        self.board.umount()
-        self.board.exec('print(uos.getcwd())')
-
-    def do_free(self, args: Argslist) -> None:
-        """
-        Print the free and used memory:
-            %free"""
-        verbose = '1' if args and args[0] == '-v' else ''
-        self.board.exec(
-            'from micropython import mem_info; mem_info({})'.format(verbose))
-
-    def do_df(self, args: Argslist) -> None:
-        """
-        Print the free and used flash storage:
-            %df [dir1, dir2, ...]"""
-        print("{:10} {:>9} {:>9} {:>9} {:>3}% {}".format(
-            "", "Bytes", "Used", "Available", "Use", "Mounted on"))
-        for dir in (args or ['/']):
-            with catcher(self.board.write):
-                _, bsz, tot, free, *_ = self.board.eval(
-                    'print(uos.statvfs("{}"))'.format(dir))
-                print("{:10} {:9d} {:9d} {:9d} {:3d}% {}".format(
-                    dir, tot * bsz, (tot - free) * bsz, free * bsz,
-                    round(100 * (1 - free / tot)), dir))
-
-    def do_gc(self, args: Argslist) -> None:
-        """
-        Run the micropython garbage collector on the board to free memory.
-        Will also print the free memory before and after gc:
-            %gc"""
-        if args:
-            print('gc: unexpected args:', args)
-        with catcher(self.board.write):
-            before, after = self.board.eval(
-                'from gc import mem_free,collect;'
-                'b=mem_free();collect();print([b,mem_free()])')
-            print("Before GC: Free bytes =", before)
-            print("After  GC: Free bytes =", after)
-
-    # Extra commands
-    def do_shell(self, args: Argslist) -> None:
-        """
-        Execute shell commands from the "%" prompt as well, eg:
-            %!date"""
-        if args and len(args) == 2 and args[0] == 'cd':
-            os.chdir(args[1])
-        else:
-            os.system(' '.join(args))   # TODO: Use interactive shell
-
+    # Some utility commands to set aliases and parameters
     def do_alias(self, args: Argslist) -> None:
         """
         Assign an alias for other commands: eg:
@@ -722,7 +211,7 @@ class RemoteCmd(cmd.Cmd):
                 self.load_board_params()
                 self.names[self.params['unique_id']] = value
             elif key in ['lscolour', 'lscolor']:
-                d: Dict[str, str] = {}
+                d: dict[str, str] = {}
                 d.update(json.loads(value))
                 for k, v in d.items():
                     colour = self.colour.ansi(v)
@@ -1055,7 +544,7 @@ class RemoteCmd(cmd.Cmd):
 
         return args
 
-    # Cmd control functions
+    # Override some control functions in the Cmd class
     def preloop(self) -> None:
         self.options_loaded: bool
         self.rcfile_loaded:  bool
@@ -1070,7 +559,7 @@ class RemoteCmd(cmd.Cmd):
             self.rcfile_loaded = True
             # Remove the mpremote aliases which override mpr-thing commands
             for k in ['cat', 'ls', 'cp', 'rm', 'mkdir', 'rmdir', 'df']:
-                del(mpremote.main._command_expansions[k])
+                del mpremote.main._command_expansions[k]
         if not self.multi_cmd_mode:
             self.prompt = \
                 self.colour(self.prompt_colour, self.base_prompt) + '%'

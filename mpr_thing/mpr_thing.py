@@ -3,8 +3,8 @@
 # vscode-fold=1
 
 
-import select, re, sys, time
-from typing import (Union, Callable)
+import select, re, sys, time, locale
+from typing import Callable
 from serial import Serial
 
 from mpremote import main as mpremote_main
@@ -13,7 +13,8 @@ from mpremote.pyboardextended import PyboardExtended
 from mpremote.console import ConsolePosix, ConsoleWindows
 
 from .board import Board
-from .commands import LocalCmd, RemoteCmd
+from .local_commands import LocalCmd
+from .remote_commands import RemoteCmd
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
@@ -32,7 +33,7 @@ def hard_reset(pyb: PyboardExtended) -> None:
 
 
 def cursor_column(
-        console_in: Union[ConsolePosix, ConsoleWindows],
+        console_in: ConsolePosix | ConsoleWindows,
         writer: Writer) -> int:
     'Query the console to get the current cursor column number.'
     writer(b'\x1b[6n')   # Query terminal for cursor position
@@ -63,7 +64,7 @@ def cursor_column(
 # at the base python prompt as starting a "magic" command.
 def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
         pyb:                PyboardExtended,
-        console_in:         Union[ConsolePosix, ConsoleWindows],
+        console_in:         ConsolePosix | ConsoleWindows,
         console_out_write:  Writer,
         *,
         code_to_inject:     bytes,
@@ -170,6 +171,9 @@ mpremote_main.do_repl_main_loop = my_do_repl_main_loop
 
 
 def main() -> int:
+    # Set locale for file listings, etc.
+    locale.setlocale(locale.LC_ALL, '')
+
     return mpremote_main.main()     # type: ignore
 
 
