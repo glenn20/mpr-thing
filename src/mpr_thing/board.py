@@ -14,7 +14,7 @@ from typing import Any, Sequence, Iterable, Callable, Optional
 from mpremote.pyboard import Pyboard, stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended
 
-from .catcher import catcher, raw_repl as real_raw_repl
+from .catcher import catcher, last_exception, raw_repl as real_raw_repl
 
 # Type aliases
 Writer    = Callable[[bytes], None]     # Type of the console write functions
@@ -144,13 +144,9 @@ class Board:
                 response = bytes(response, 'utf-8')
             self.writer(response)
 
-    def raw_repl(
-            self,
-            silent:     bool = False,
-            ) -> real_raw_repl:
+    def raw_repl(self, silent: bool = False) -> Any:
         'Return a context manager for the micropython raw repl.'
-        return real_raw_repl(
-            self.pyb, self.write, silent=silent)
+        return real_raw_repl(self.pyb, self.write, silent=silent)
 
     # Execute stuff on the micropython board
     def exec_(
@@ -277,13 +273,11 @@ class Board:
         with catcher(self.write):
             files = [
                 RemotePath(dir, f).set_modes(stat)
-                for f, *stat in self.eval(
-                    '_helper.ls("{}",{})'.format(dir, long),
-                    silent=True)]
+                for f, *stat in self.eval(f'_helper.ls("{dir}",{long})', True)]
             files.sort(key=lambda f: f.name)
-        if catcher.exception:
+        if last_exception:
             print('ls_dir(): list directory \'{}\' failed.'.format(dir))
-            print(catcher.exception)
+            print(last_exception)
             return None
         return files
 
