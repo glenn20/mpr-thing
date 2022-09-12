@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import os, re, stat
 from pathlib import PurePosixPath, Path
-from typing import (
-    Any, Dict, Sequence, Union, Iterable, Callable, Optional, Tuple)
+from typing import Any, Sequence, Iterable, Callable, Optional
 
 from mpremote.pyboard import Pyboard, stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended
@@ -19,8 +18,8 @@ from .catcher import catcher, raw_repl as real_raw_repl
 
 # Type aliases
 Writer    = Callable[[bytes], None]     # Type of the console write functions
-PathLike  = Union[str, os.PathLike]     # Accepts str or Pathlib for filenames
-Filenames = Union[Iterable[str], str]   # Accept single filenames as file list
+PathLike  = str | os.PathLike           # Accepts str or Pathlib for filenames
+Filenames = Iterable[str] | str         # Accept single filenames as file list
 
 
 # Paths on the board are always Posix paths even if local host is Windows.
@@ -82,7 +81,7 @@ class Board:
     cmd_hook_code = b"Override this with contents of 'board/cmd_helper.py'."
 
     # Apply basic compression on hook code - (from mpremote tool).
-    HookSubsType = Sequence[Tuple[bytes, bytes, Dict[str, int]]]
+    HookSubsType = Sequence[tuple[bytes, bytes, dict[str, int]]]
     hook_subs: HookSubsType = [
         (b" *#.*$",          b"",     {'flags': re.MULTILINE}),
         (b"    ",            b" ",    {}),
@@ -231,7 +230,7 @@ class Board:
         with self.raw_repl():
             self.pyb.fs_rmdir(filename)
 
-    def mount(self, directory: str, opts: str = False) -> None:
+    def mount(self, directory: str, opts: str = "") -> None:
         path = os.path.realpath(directory)
         if not os.path.isdir(path):
             print("%mount: No such directory:", path)
@@ -257,7 +256,7 @@ class Board:
         if isinstance(filenames, str):
             filenames = [filenames]
         for f in filenames:
-            stat: Optional[Tuple[int, int, int]] = None
+            stat: Optional[tuple[int, int, int]] = None
             with catcher(self.write, silent=True):
                 stat = self.eval((
                     'try: s=uos.stat("{}");print((s[0],s[6],s[8]))\n'
@@ -292,7 +291,7 @@ class Board:
             self,
             files:      Filenames,
             opts:       str
-            ) -> Iterable[Tuple[str, Iterable[RemotePath]]]:
+            ) -> Iterable[tuple[str, Iterable[RemotePath]]]:
         "Return a list of files on the board."
         recursive  = 'R' in opts
         long_style = 'l' in opts

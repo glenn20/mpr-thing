@@ -9,7 +9,7 @@
 # Allow list[str] instead of List[str]
 from __future__ import annotations
 
-import os, re, readline, locale, time, cmd, shutil
+import os, re, readline, time, cmd, shutil
 import json, inspect, shlex, glob, fnmatch, itertools
 from typing import Any, Iterable, Optional
 
@@ -22,14 +22,14 @@ from .colour import AnsiColour
 # Type alias for the list of command arguments
 Argslist = list[str]
 
-# Set locale for file listings, etc.
-locale.setlocale(locale.LC_ALL, '')
-
 HISTORY_FILE = '~/.mpr-thing.history'
 OPTIONS_FILE = '.mpr-thing.options'
 RC_FILE      = '.mpr-thing.rc'
 
 
+# Support for the interactive command line interpreter for running shell-like
+# commands on the remote board. This base class contains all the initialisation
+# and utility methods as well as some necessary overrides for the cmd.Cmd class.
 class Commands(cmd.Cmd):
     base_prompt: str = '\r>>> '
     doc_header: str = (
@@ -37,14 +37,13 @@ class Commands(cmd.Cmd):
         'Use "%%" to enter multiple command mode.\n'
         'Further help is available for the following commands:\n'
         '======================================================')
-    ruler = ''       # Cmd.ruler is broken if doc_header is multi-line
-    # Cmds for which glob (*) expansion and completion happens on the board
-    remote_cmds = (
+    ruler = ''  # Cmd.ruler is broken if doc_header is multi-line
+    remote_cmds = (  # Commands that complete filenames on the board
         'fs', 'ls', 'cat', 'edit', 'touch', 'mv', 'cp', 'rm', 'get',
         'cd', 'mkdir', 'rmdir', 'echo')
-    dir_cmds = (
+    dir_cmds = (  # Commands that complete on directory names
         'cd', 'mkdir', 'rmdir', 'mount', 'lcd')
-    noglob_cmds = (
+    noglob_cmds = (  # Commands that have no completion
         'eval', 'exec', 'alias', 'unalias', 'set')
 
     def __init__(self, board: Board):

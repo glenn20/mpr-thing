@@ -17,6 +17,9 @@ from .board import Board
 from .base_commands import Commands, Argslist
 
 
+# The commands we support at the remote command prompt.
+# Inherits from base_commands.Commands which contains all the
+# initialisation and utility methods and overrides for cmd.Cmd class.
 class RemoteCmd(Commands):
     'A class to run commands on the micropython board.'
     def __init__(self, board: Board):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
 import sys
-from mpr_thing import mpr_thing
+from src import mpr_thing
 
 sys.exit(mpr_thing.main())

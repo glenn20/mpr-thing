@@ -1,6 +1,30 @@
-[build-system]
-requires = [
-    "setuptools>=42",
-    "wheel"
+[project]
+name = "mpr-thing"
+version = "0.0.1"
+authors = [
+  { name="Glenn Moloney", email = "glenn.moloney@gmail.com" },
 ]
+description = "Enhance mpremote tool."
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/glenn20/mpr-thing"
+"Bug Tracker" = "https://github.com/glenn20/mpr-thing/issues"
+
+[build-system]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.mypy]
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_calls = false
+files = "src/mpr_thing/*.py"
