@@ -9,8 +9,8 @@ handing exceptions.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Callable, Optional
 from traceback import print_exc
+from typing import Callable, Optional
 
 from mpremote.pyboard import PyboardError
 from mpremote.pyboardextended import PyboardExtended

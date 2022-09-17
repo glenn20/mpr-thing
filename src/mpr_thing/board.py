@@ -11,7 +11,7 @@ import os, re, stat
 from pathlib import PurePosixPath, Path
 from typing import Any, Sequence, Iterable, Callable, Optional
 
-from mpremote.pyboard import Pyboard, stdout_write_bytes
+from mpremote.pyboard import stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended
 
 from .catcher import catcher, last_exception, raw_repl as real_raw_repl
@@ -25,6 +25,7 @@ Filenames = Iterable[str] | str         # Accept single filenames as file list
 # Paths on the board are always Posix paths even if local host is Windows.
 class RemotePath(PurePosixPath):
     'A Pathlib compatible class to hold details of files on the board.'
+
     def __init__(self, *args: str) -> None:
         # Note: Path initialises from *args in __new__()!!!
         self.mode    = 0
@@ -99,11 +100,7 @@ class Board:
             code = re.sub(a, b, code, **flags)
         return code
 
-    def __init__(
-            self,
-            # Pylance doesn't recognise PyboardExtended as subclass of Pyboard
-            pyb:    PyboardExtended | Pyboard,
-            writer: Writer) -> None:
+    def __init__(self, pyb: PyboardExtended, writer: Writer) -> None:
         """Construct a "Board" instance.
 
         Args:

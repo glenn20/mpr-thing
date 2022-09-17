@@ -22,6 +22,7 @@ from .base_commands import Commands, Argslist
 # initialisation and utility methods and overrides for cmd.Cmd class.
 class RemoteCmd(Commands):
     'A class to run commands on the micropython board.'
+
     def __init__(self, board: Board):
         super().__init__(board)
 

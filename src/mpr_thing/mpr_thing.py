@@ -69,8 +69,8 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
         *,
         code_to_inject:     bytes,
         file_to_inject:     str) -> None:
-
     'An overload function for the main repl loop in "mpremote".'
+
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
     local, remote = LocalCmd(), RemoteCmd(Board(pyb, console_out_write))
     prompt = b"\n>>> "
