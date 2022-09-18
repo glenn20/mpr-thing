@@ -4,11 +4,12 @@
 
 import uos, gc
 
+
 class _MagicHelper:
 
     @staticmethod
     def path(a, b):
-        return '/'.join((a, b)) if a != "/" else "/" + b
+        return f'{a}{"/" if a and a != "/" else ""}{b}'
 
     @staticmethod
     def is_dir(mode):
@@ -16,16 +17,43 @@ class _MagicHelper:
 
     @staticmethod
     def basename(f):
-        return f[f.rfind('/')+1:]
+        return f[f.rfind('/') + 1:]
 
-    def ls(self, dirr, long):
+    def ls(self, dirr, opts):
         print("[", end="")
         for f in uos.ilistdir(dirr):
-            if long:
-                s = uos.stat(self.path(dirr, f[0]))
-                print('("',f[0],'",',s[0],',',s[6],',',s[8],')',sep="",end=",")
-            else:
-                print('("',f[0],'",',f[1],')',sep="",end=",")
+            x = [f[0], f[1]]
+            if 'l' in opts:
+                stat = uos.stat(self.path(dirr, f[0]))
+                x.extend([stat[6], stat[8]])
+            # if 'l' in opts:
+            #     s = uos.stat(self.path(dirr, f[0]))
+            #     x = [f[0], s[0], s[6], s[8]]
+            # else:
+            #     x = [f[0], f[1]]
+            print(x, end=",")
+        print("]")
+
+    def ls_dirs(self, dirs, opts):
+        recursive = 'R' in opts
+        long = "l" in opts
+        print("[", end="")
+        while dirs:
+            d = dirs.pop()
+            print(f'("{d}", [', end="")
+            for f in uos.ilistdir(d):
+                p = self.path(d, f[0])
+                if recursive and self.is_dir(f[1]):
+                    dirs.append(p)
+                x = [f[0], f[1]]
+                if long:
+                    try:
+                        stat = uos.stat(p)
+                        x.extend([stat[6], stat[8]])
+                    except OSError:
+                        pass
+                print(x, end=",")
+            print(']),')
         print("]")
 
     # Using a fixed buffer reduces heap allocation
@@ -39,7 +67,8 @@ class _MagicHelper:
         while n > 0:
             f2.write(self._buf, n)
             n = f1.readinto(self._buf)
-        f1.close(); f2.close()
+        f1.close()
+        f2.close()
 
     def cp_dir(self, dirr, dest, opts):
         if 'r' not in opts:
@@ -49,10 +78,10 @@ class _MagicHelper:
         try:
             if 'v' in opts: print(dest)
             if 'n' not in opts: uos.mkdir(dest)
-        except:
+        except OSError:
             if not self.is_dir(uos.stat(dest)[0]):
                 print('Can not overwrite non-directory',
-                    dest, 'with directory', dir)
+                      dest, 'with directory', dir)
                 return
         for f, m, *_ in uos.ilistdir(dir):
             if self.is_dir(m) and 'r' in opts:
@@ -115,11 +144,12 @@ class _MagicHelper:
                     if 'n' not in opts: uos.rmdir(f)
                 else:
                     print('Can not remove directory "{}": Use "%rm -r"'
-                        .format(f))
+                          .format(f))
 
     def pr(self):   # Return some dynamic values for the command prompt
         print(
-            '("',uos.getcwd(),'",',gc.mem_alloc(),',',gc.mem_free(),')',
+            '("', uos.getcwd(), '",', gc.mem_alloc(), ',', gc.mem_free(), ')',
             sep='')
+
 
 _helper = _MagicHelper()

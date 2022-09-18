@@ -212,50 +212,41 @@ class Board:
                 RemotePath(f).set_exists(False))
         return files
 
-    def ls_dir(
+    def ls_dirs(
             self,
-            dir:    str,
-            long:   bool = False
-            ) -> Optional[Iterable[RemotePath]]:
+            dirs:    list[str],
+            opts:   str = ""
+            ) -> list[tuple[str, list[RemotePath]]]:
         'Return a list of files (RemotePath) on board in "dir".'
-        files = None
         with catcher(self.write):
-            files = [
-                RemotePath(dir, f).set_modes(stat)
-                for f, *stat in self.eval(f'_helper.ls("{dir}",{long})', True)]
-            files.sort(key=lambda f: f.name)
+            ls_files = self.eval(f'_helper.ls_dirs({dirs},"{opts}")', False)
+            remotefiles = sorted([
+                (d, sorted([RemotePath(d, f[0]).set_modes(f[1:])
+                            for f in files],
+                           key=lambda f: f.name))
+                for d, files in ls_files
+                ], key=lambda t: t[0])
         if last_exception:
-            print('ls_dir(): list directory \'{}\' failed.'.format(dir))
+            print('ls_dir(): list directory \'{}\' failed.'.format(dirs))
             print(last_exception)
-            return None
-        return files
+            return []
+        return remotefiles
 
     def ls(
             self,
-            files:      Filenames,
+            filenames:  Filenames,
             opts:       str
-            ) -> Iterable[tuple[str, Iterable[RemotePath]]]:
+            ) -> Iterable[tuple[str, list[RemotePath]]]:
         "Return a list of files on the board."
-        recursive  = 'R' in opts
-        long_style = 'l' in opts
-        files = [files] if isinstance(files, str) else list(files)
-        files.sort
-        filelist = self.ls_files(files)
-        yield ('', [f for f in filelist if f.is_file()])
-
-        dirs = (
-            list(d for d in filelist if d.is_dir()) if files else
-            [RemotePath('.')])
-        for i, dir in enumerate(dirs):
-            subfiles = self.ls_dir(str(dir), long_style)
-            if subfiles is not None:
-                yield (str(dir), subfiles)
-
-                if recursive:     # Recursive listing
-                    # As we find subdirs, insert them next in the list
-                    for j, subdir in enumerate(
-                            d for d in subfiles if d.is_dir()):
-                        dirs.insert(i + j + 1, subdir)
+        filenames = [filenames] if isinstance(filenames, str) else list(filenames)
+        filenames.sort
+        filelist = self.ls_files(filenames)
+        files = [f for f in filelist if f.is_file()]
+        dirs = ([d for d in filelist if d.is_dir()]
+                if filenames else [RemotePath('.')])
+        x = [('', files)]
+        lsdirs = self.ls_dirs([d.name if d.name != "" else "." for d in dirs], opts)
+        return x + lsdirs
 
     def cp(
             self,
