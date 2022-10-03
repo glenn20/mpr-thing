@@ -502,7 +502,7 @@ class Commands(cmd.Cmd):
         return new_args
 
     def process_args(self, args: Argslist) -> Argslist:
-        'Expand aliases, macros and glob expansiions.'
+        'Expand aliases, macros and glob expansions.'
 
         # Get the first command if multiple commands on one line.
         # Push the rest of the args back onto the command queue
@@ -527,15 +527,16 @@ class Commands(cmd.Cmd):
         args = split_semicolons(args)   # Alias may expand to include ';'
 
         # Expand mpremote commandline macros
-        mpremote.main.do_command_expansion(args)  # From mpremote.main
-        for i, arg in enumerate(args):
-            # Insert ';'s if necessary to split up run-together commands
-            # Eg: exec "x=2" eval "x**2" -> exec "x=2" ; eval "x**2"
-            if arg in [
-                    'connect', 'disconnect', 'mount', 'eval',
-                    'exec', 'run', 'fs']:
-                if i > 0 and args[i - 1] != ';':
-                    args.insert(i, ';')
+        # This intercepts commend at any place in the line.!!
+        # mpremote.main.do_command_expansion(args)  # From mpremote.main
+        # for i, arg in enumerate(args):
+        #     # Insert ';'s if necessary to split up run-together commands
+        #     # Eg: exec "x=2" eval "x**2" -> exec "x=2" ; eval "x**2"
+        #     if arg in [
+        #             'connect', 'disconnect', 'mount', 'eval',
+        #             'exec', 'run', 'fs']:
+        #         if i > 0 and args[i - 1] != ';':
+        #             args.insert(i, ';')
         args = split_semicolons(args)   # Macros expand to include ';'
 
         # Expand any glob patterns on the command line
