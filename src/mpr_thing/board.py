@@ -20,7 +20,7 @@ from .remote_path import RemotePath
 # Type aliases
 Writer    = Callable[[bytes], None]     # Type of the console write functions
 PathLike  = str | os.PathLike           # Accepts str or Pathlib for filenames
-Filenames = Iterable[str] | str         # Accept single filenames as file list
+Filenames = Iterable[str]               # Accept single filenames as file list
 
 
 # A collection of helper functions for file listings and filename completion
@@ -197,40 +197,45 @@ class Board:
             filenames:  Filenames
             ) -> Iterable[RemotePath]:
         'Return a list of files (RemotePath) on board for list of filenames.'
-        files: list[RemotePath] = []
-        if isinstance(filenames, str):
-            filenames = [filenames]
-        for f in filenames:
-            stat: Optional[tuple[int, int, int]] = None
-            with catcher(self.write, silent=True):
-                stat = self.eval((
-                    'try: s=uos.stat("{}");print((s[0],s[6],s[8]))\n'
-                    'except: s=None\n').format(f), silent=True)
-            files.append(
+        with catcher(self.write, silent=True):
+            ls: list[tuple[str, Optional[tuple[int, int, int]]]]
+            ls = self.eval(f'_helper.ls_files({filenames})', False)
+            return [
                 RemotePath(f).set_modes(stat, exists=True)
                 if stat else
-                RemotePath(f).set_exists(False))
-        return files
+                RemotePath(f).set_exists(False)
+                for f, stat in ls]
 
     def ls_dirs(
             self,
-            dirs:    list[str],
-            opts:   str = ""
+            dir_list:   list[str],
+            opts:       str = ""
             ) -> list[tuple[str, list[RemotePath]]]:
-        'Return a list of files (RemotePath) on board in "dir".'
+        """Return a listing of files in directories on the board.
+        Takes a list of directory pathnames and a listing options string.
+        Returns a list: [(dirname, [Path1, Path2, Path3..]), ...]
+        """
+        remotefiles = []
         with catcher(self.write):
-            ls_files = self.eval(f'_helper.ls_dirs({dirs},"{opts}")', False)
-            remotefiles = sorted([
-                (d, sorted([RemotePath(d, f[0]).set_modes(f[1:])
-                            for f in files],
-                           key=lambda f: f.name))
-                for d, files in ls_files
-                ], key=lambda t: t[0])
+            # [("dir1", [["file1", mode, size, ..], ["file2", ...]), (..), ...]
+            listing: list[tuple[str, list[tuple[str, int, int, int]]]]
+            listing = self.eval(f'_helper.ls_dirs({dir_list},"{opts}")', False)
+            listing.sort(key=lambda item: item[0])  # Sort by directory pathname
+            for dir, file_list in listing:
+                # sort each directory listing by filename
+                file_list.sort(key=lambda item: item[0])
+            remotefiles = [  # Convert to lists of RemotePath objects
+                (dir, [RemotePath(dir, f[0]).set_modes(f[1:]) for f in file_list])
+                for dir, file_list in listing]
         if last_exception:
-            print('ls_dir(): list directory \'{}\' failed.'.format(dirs))
+            print('ls_dir(): list directory \'{}\' failed.'.format(dir_list))
             print(last_exception)
             return []
         return remotefiles
+
+    def ls_dir(self, dir: str) -> list[RemotePath]:
+        dir_files = self.ls_dirs([dir])
+        return dir_files[0][1] if dir_files else []
 
     def ls(
             self,
@@ -241,11 +246,15 @@ class Board:
         filenames = [filenames] if isinstance(filenames, str) else list(filenames)
         filenames.sort
         filelist = self.ls_files(filenames)
+        missing = [f for f in filelist if not f.exists()]
         files = [f for f in filelist if f.is_file()]
         dirs = ([d for d in filelist if d.is_dir()]
                 if filenames else [RemotePath('.')])
+        for f in missing:
+            print(f"ls: cannot access {f.as_posix()!r}: No such file or directory")
         x = [('', files)]
-        lsdirs = self.ls_dirs([d.name if d.name != "" else "." for d in dirs], opts)
+        y = [d.as_posix() if d.as_posix() != "" else "." for d in dirs]
+        lsdirs = self.ls_dirs(y, opts)
         return x + lsdirs
 
     def cp(
@@ -331,9 +340,9 @@ class Board:
             opts:       str = ''
             ) -> None:
         'Copy files and directories from the board to a local folder:'
-        dest      = Path(dest)
-        verbose   = 'v' in opts
-        dry_run   = 'n' in opts
+        dest = Path(dest)
+        verbose = 'v' in opts
+        dry_run = 'n' in opts
         recursive = 'r' in opts
         if isinstance(filenames, str):
             filenames = [filenames]
@@ -404,9 +413,9 @@ class Board:
             opts:       str = ''
             ) -> None:
         "Copy local files to the current folder on the board."
-        dest      = Path(dest)
-        verbose   = 'v' in opts
-        dry_run   = 'n' in opts
+        dest = Path(dest)
+        verbose = 'v' in opts
+        dry_run = 'n' in opts
         recursive = 'r' in opts
         if isinstance(filenames, str):
             filenames = [filenames]

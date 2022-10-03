@@ -58,13 +58,15 @@ class RemoteCmd(Commands):
             opts, *args = args
         filelist = list(self.board.ls(args, opts))
         linebreak = ''
-        for i, (dir, files) in enumerate(filelist):
+        first_time = True
+        for dir, files in filelist:
             # TODO: try: if dir and len(....
-            if i > 0 and len(filelist) > 2:     # Print the directory name
+            if not first_time and len(filelist) > 2:  # Print the directory name
                 print('{}{}:'.format(linebreak, self.colour.dir(dir)))
             if dir or files:
                 self.print_files(files, opts)
                 linebreak = '\n'
+            first_time = False
 
     def do_cat(self, args: Argslist) -> None:
         """

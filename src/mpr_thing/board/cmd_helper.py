@@ -19,19 +19,14 @@ class _MagicHelper:
     def basename(f):
         return f[f.rfind('/') + 1:]
 
-    def ls(self, dirr, opts):
+    def ls_files(self, files):
         print("[", end="")
-        for f in uos.ilistdir(dirr):
-            x = [f[0], f[1]]
-            if 'l' in opts:
-                stat = uos.stat(self.path(dirr, f[0]))
-                x.extend([stat[6], stat[8]])
-            # if 'l' in opts:
-            #     s = uos.stat(self.path(dirr, f[0]))
-            #     x = [f[0], s[0], s[6], s[8]]
-            # else:
-            #     x = [f[0], f[1]]
-            print(x, end=",")
+        for f in files:
+            try:
+                s = uos.stat(f)
+                print((f, (s[0], s[6], s[8])), end=",")
+            except OSError:
+                print((f, None), end=",")
         print("]")
 
     def ls_dirs(self, dirs, opts):
@@ -45,13 +40,14 @@ class _MagicHelper:
                 p = self.path(d, f[0])
                 if recursive and self.is_dir(f[1]):
                     dirs.append(p)
-                x = [f[0], f[1]]
                 if long:
                     try:
                         stat = uos.stat(p)
-                        x.extend([stat[6], stat[8]])
+                        x = (f[0], f[1], stat[6], stat[8])
                     except OSError:
-                        pass
+                        x = ()
+                else:
+                    x = (f[0], f[1])
                 print(x, end=",")
             print(']),')
         print("]")
