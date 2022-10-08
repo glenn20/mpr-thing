@@ -524,7 +524,6 @@ class BaseCommands(cmd.Cmd):
         # Add any unused args to the end of the line
         new_args.extend(arg for n, arg in enumerate(args) if n not in used)
 
-        print(new_args)
         return new_args
 
     def process_args(self, args: Argslist) -> Argslist:
