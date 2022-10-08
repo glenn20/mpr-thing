@@ -328,6 +328,8 @@ class BaseCommands(cmd.Cmd):
                         continue
                     self.lsspec[k.lstrip('*')] = v
                 self.colour.spec.update(self.lsspec)
+            elif key == 'debug':
+                self.board.debug = int(value)
             else:
                 print("%set: unknown key:", key)
         self.save_options()

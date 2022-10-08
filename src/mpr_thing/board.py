@@ -29,6 +29,12 @@ CODE_COMPRESS_RULES: list[tuple[bytes, bytes, dict[str, int]]] = [
     (br"  *([=+-])  *",  br"\1",  {}),
 ]
 
+DEBUG_EXEC = 1
+
+
+def fstrip(f: str) -> str:
+    return f.rstrip('/') if f != '/' else f
+
 
 # A collection of helper functions for file listings and filename completion
 # to be uploaded to the micropython board and processed on the local host.
@@ -48,6 +54,7 @@ class Board:
         self.pyb = pyb
         self.writer = writer
         self.default_depth = 40   # Max recursion depth for cp(), rm()
+        self.debug: int = 0
 
     def load_helper(self) -> None:
         'Load the __helper class and methods onto the micropython board.'
@@ -80,10 +87,14 @@ class Board:
             code:       bytes | str,
             ) -> str:
         'Execute some code on the micropython board.'
-        response: bytes = b''
+        response: str = ""
+        if self.debug & DEBUG_EXEC:
+            print(f"Board.exec(): code = {code}")
         with self.raw_repl():
-            response = self.pyb.exec_(code)
-        return response.decode().strip()
+            response = self.pyb.exec_(code).decode().strip()
+        if self.debug & DEBUG_EXEC:
+            print(f"Board.exec(): resp = {response}")
+        return response
 
     def eval(
             self,
