@@ -177,6 +177,14 @@ class Commands(cmd.Cmd):
         self.save_options()
 
     def do_set(self, args: Argslist) -> None:  # noqa: C901 too complex
+        if not args:
+            print(f'set prompt="{self.prompt_fmt}"')
+            print(f'set promptcolour="{self.prompt_colour}"')
+            print(f'set name="{self.names[self.params["unique_id"]]}"')
+            print(f'set names=\'{json.dumps(self.names)}\'')
+            print(f'set lscolour=\'{json.dumps(self.lsspec)}\'')
+            return
+
         for arg in args:
             try:
                 key, value = arg.split('=', maxsplit=1)
