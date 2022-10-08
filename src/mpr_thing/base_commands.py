@@ -455,7 +455,7 @@ class BaseCommands(cmd.Cmd):
             # Execute filename completion on the board.
             lsdir = self.board.ls_dir(dir or '.') or []
             files = [
-                str(f) + ('/' if f.is_dir() else '')
+                dir + str(f) + ('/' if f.is_dir() else '')
                 for f in lsdir if f.name.startswith(word)]
         else:
             # Execute filename completion on local host
