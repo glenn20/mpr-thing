@@ -115,7 +115,7 @@ class Board:
             self.pyb.fs_cat(filename)
 
     def touch(self, filename: str) -> None:
-        self.exec('open("{}", "a").close()'.format(filename))
+        self.exec(f'open("{filename}", "a").close()')
 
     def mv(
             self,
@@ -125,10 +125,11 @@ class Board:
             ) -> None:
         if isinstance(filenames, str):
             filenames = [filenames]
-        self.exec('_helper.mv({},"{}","{}")'.format(
-            [f.rstrip('/') if f != '/' else f for f in filenames],
-            dest.rstrip('/') if dest != '/' else dest,
-            opts))
+        self.exec(
+            f'_helper.mv('
+            f'{[fstrip(f) for f in filenames]},'
+            f'"{fstrip(dest)}",'
+            f'"{opts}")')
 
     def rm(
             self,
@@ -137,12 +138,10 @@ class Board:
             ) -> None:
         if isinstance(filenames, str):
             filenames = [filenames]
-        self.exec('_helper.rm({},"{}")'.format(
-            [f.rstrip('/') if f != '/' else f for f in filenames],
-            opts))
+        self.exec(f'_helper.rm({[fstrip(f) for f in filenames]},"{opts}")')
 
     def cd(self, filename: str) -> None:
-        self.exec('uos.chdir({})'.format(repr(filename)))
+        self.exec(f'uos.chdir({filename!r})')
 
     def pwd(self) -> str:
         pwd: str = self.eval('print("\\"{}\\"".format(uos.getcwd()))')
@@ -248,23 +247,22 @@ class Board:
             elif f.is_file() and (dest_f.is_file() or not dest_f.exists()):
                 # cp file1 file2
                 self.exec(
-                    '_helper.cp_file("{}","{}","{}")'.format(
-                        str(f), str(dest_f), opts))
+                    f'_helper.cp_file("{str(f)}","{str(dest_f)}","{opts}")')
                 return
             elif f.is_dir() and not dest_f.exists():
                 # cp dir1 dir2 (where dir2 does not exist)
                 if 'v' in opts: print(str(dest))
                 if 'n' not in opts: self.mkdir(str(dest))
                 self.exec(
-                    '_helper.cp_dir("{}","{}","{}")'.format(
-                        str(f) + '/.',  # Ugly hack to make it work
-                        str(dest_f), opts))
+                    f'_helper.cp_dir('
+                    f'"{str(f) + "/."}",'
+                    f'"{str(dest_f)}",'
+                    f'"{str(dest_f)}")')
                 return
 
         # Copy the files and directories to dest
         self.exec(
-            '_helper.cp({},"{}","{}")'.format(
-                [str(f) for f in files], str(dest_f), opts))
+            f'_helper.cp({[str(f) for f in files]},"{str(dest_f)}","{opts}")')
 
     def get_file(
             self,
@@ -335,10 +333,10 @@ class Board:
                         self.get_dir(file, dest, verbose, dry_run)
                     else:
                         print(
-                            'get: skipping "{}", use "-r" to copy directories.'
-                            .format(str(file)))
+                            f'get: skipping "{str(file)}", '
+                            f'use "-r" to copy directories.')
                 elif not file.exists():
-                    print('{}: No such file.'.format(str(file)))
+                    print(f'{str(file)}: No such file.')
 
     def put_file(
             self,
@@ -408,8 +406,8 @@ class Board:
                     self.put_dir(file, dest, verbose, dry_run)
                 else:
                     print(
-                        'put: skipping "{}", use "-r" to copy directories.'
-                        .format(str(file)))
+                        f'put: skipping "{str(file)}", '
+                        f'use "-r" to copy directories.')
 
     def df(
             self,
@@ -418,7 +416,7 @@ class Board:
         ret: list[tuple[str, int, int, int]] = []
         for dir in (dirs or ['/']):
             _, bsz, tot, free, *_ = self.eval(
-                'print(list(uos.statvfs("{}")))'.format(dir))
+                f'print(list(uos.statvfs("{dir}")))')
             ret.append((dir, tot * bsz, (tot - free) * bsz, free * bsz))
         return ret
 

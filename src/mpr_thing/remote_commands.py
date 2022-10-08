@@ -59,9 +59,8 @@ class RemoteCmd(BaseCommands):
         linebreak = ''
         first_time = True
         for dir, files in filelist:
-            # TODO: try: if dir and len(....
             if not first_time and len(filelist) > 2:  # Print the directory name
-                print('{}{}:'.format(linebreak, self.colour.dir(dir)))
+                print(f'{linebreak}{self.colour.dir(dir)}')
             if dir or files:
                 self.print_files(files, opts)
                 linebreak = '\n'
@@ -228,7 +227,7 @@ class RemoteCmd(BaseCommands):
         """
         Eval and print the python code on the board, eg.:
             %eval 34 * 35"""
-        response = self.board.exec('print({})'.format(' '.join(args)))
+        response = self.board.exec(f"print({' '.join(args)})")
         print(response)
 
     def do_run(self, args: Argslist) -> None:
@@ -328,7 +327,7 @@ class RemoteCmd(BaseCommands):
             %free"""
         verbose = '1' if args and args[0] == '-v' else ''
         self.board.exec(
-            'from micropython import mem_info; mem_info({})'.format(verbose))
+            f'from micropython import mem_info; mem_info({verbose})')
 
     def do_df(self, args: Argslist) -> None:
         """

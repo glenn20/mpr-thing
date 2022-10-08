@@ -113,7 +113,7 @@ class BaseCommands(cmd.Cmd):
         'Load/reload the helper code onto the micropython board.'
         if not hasattr(self, 'hooks_loaded') or not self.hooks_loaded:
             self.board.load_helper()
-            self.board.exec('_helper.localtime_offset = {}'.format(-time.timezone))
+            self.board.exec(f'_helper.localtime_offset = {-time.timezone}')
             self.hooks_loaded = True
 
     def reset_hooks(self) -> None:
@@ -203,12 +203,12 @@ class BaseCommands(cmd.Cmd):
             for f in files:
                 if f.mtime < 40 * 31536000:  # ie. before 2010
                     f.mtime += 946684800   # Correct for epoch=2000 on uPython
-                print('{:9d} {} {}'.format(
-                    f.size if not f.is_dir() else 0,
-                    time.strftime(
-                        '%c',
-                        time.localtime(f.mtime)).replace(' 0', '  ')[:-3],
-                    self.colour.file(f.name, dir=f.is_dir())))
+                size = f.size if not f.is_dir() else 0
+                t = time.strftime(
+                    '%c',
+                    time.localtime(f.mtime)).replace(' 0', '  ')[:-3]
+                filename = self.colour.file(f.name, dir=f.is_dir())
+                print(f'{size:9d} {t} {filename}')
         else:
             # Short listing style - data is a list of filenames
             if (len(files) < 20 and
@@ -262,7 +262,7 @@ class BaseCommands(cmd.Cmd):
         for arg in args:
             alias, value = arg.split('=', maxsplit=1)
             if not alias or not value:
-                print('Invalid alias: "{}"'.format(arg))
+                print(f'Invalid alias: "{arg}"')
                 continue
             self.alias[alias] = value
 
@@ -365,16 +365,13 @@ class BaseCommands(cmd.Cmd):
             %set lscolor='{"*.pyc": "magenta"}'
         """))
         print((
-            '\nThese options will be automatically saved in ~/{0}\n'
-            'or ./{0} (if it exists).\n'
-            '\nPrompts are python format strings and may include:\n    ')
-            .format(OPTIONS_FILE),
+            f'\nThese options will be automatically saved in ~/{OPTIONS_FILE}\n'
+            f'or ./{OPTIONS_FILE} (if it exists).\n'
+            f'\nPrompts are python format strings and may include:\n    '),
             end='')
         self.load_board_params()
         for i, k in enumerate(self.params.keys()):
-            print(
-                "{:15}".format('{' + k + '}'),
-                end='' if (i + 1) % 5 else '\n    ')
+            print(f"{'{' + k + '}':15}", end='' if (i + 1) % 5 else '\n    ')
         print('\n')
         print(inspect.cleandoc("""
         Where:
@@ -412,7 +409,7 @@ class BaseCommands(cmd.Cmd):
         if line.strip().startswith('#'):
             return not self.multi_cmd_mode        # Ignore comments
 
-        print('Unknown command: "{}"'.format(line.strip()))
+        print(f'Unknown command: "{line.strip()}"')
         return not self.multi_cmd_mode
 
     def do_help(self, args: Argslist) -> None:     # type: ignore
