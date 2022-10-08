@@ -22,6 +22,13 @@ Writer    = Callable[[bytes], None]     # Type of the console write functions
 PathLike  = str | os.PathLike           # Accepts str or Pathlib for filenames
 Filenames = Iterable[str]               # Accept single filenames as file list
 
+CODE_COMPRESS_RULES: list[tuple[bytes, bytes, dict[str, int]]] = [
+    (b" *#.*$",          b"",     {'flags': re.MULTILINE}),
+    (b"    ",            b" ",    {}),
+    (br"([,;])  *",      br"\1",  {}),
+    (br"  *([=+-])  *",  br"\1",  {}),
+]
+
 
 # A collection of helper functions for file listings and filename completion
 # to be uploaded to the micropython board and processed on the local host.
@@ -30,27 +37,6 @@ class Board:
     Provides convenience methods and wrappers for filesystem operations
     on a micropython board.
     """
-    # The helper code which runs on the micropython board
-    cmd_hook_code = b"Override this with contents of 'board/cmd_helper.py'."
-
-    # Apply basic compression on hook code - (from mpremote tool).
-    HookSubsType = Sequence[tuple[bytes, bytes, dict[str, int]]]
-    hook_subs: HookSubsType = [
-        (b" *#.*$",          b"",     {'flags': re.MULTILINE}),
-        (b"    ",            b" ",    {}),
-        (br"([,;])  *",      br"\1",  {}),
-        (br"  *([=+-])  *",  br"\1",  {}),
-    ]
-
-    compressed = False
-
-    @staticmethod
-    def do_hook_subs(subs: HookSubsType, code: bytes) -> bytes:
-        'Apply compression techniques to the code before uploading to board.'
-        for sub in subs:
-            a, b, flags = sub
-            code = re.sub(a, b, code, **flags)
-        return code
 
     def __init__(self, pyb: PyboardExtended, writer: Writer) -> None:
         """Construct a "Board" instance.
@@ -63,28 +49,19 @@ class Board:
         self.writer = writer
         self.default_depth = 40   # Max recursion depth for cp(), rm()
 
-        # Load the helper code to install on the micropython board.
+    def load_helper(self) -> None:
+        'Load the __helper class and methods onto the micropython board.'
         # The helper code is "board/cmd_helper.py" in the module directory.
         micropy_file = Path(__file__).parent / 'board' / 'cmd_helper.py'
         with open(micropy_file, 'rb') as f:
-            self.cmd_hook_code = f.read()
-
-        if not Board.compressed:
-            Board.compressed = True
-            self.cmd_hook_code = (
-                Board.do_hook_subs(
-                    Board.hook_subs, self.cmd_hook_code))
+            code = f.read()
+        for a, b, flags in CODE_COMPRESS_RULES:
+            code = re.sub(a, b, code, **flags)
+        self.exec(code)
 
     def device_name(self) -> str:
         'Get the name of the device connected to the micropython board.'
-        name = ''
-        if isinstance(self.pyb, PyboardExtended):
-            name = self.pyb.device_name
-        return name
-
-    def load_hooks(self) -> None:
-        'Load the __helper class and methods onto the micropython board.'
-        self.exec(self.cmd_hook_code)
+        return self.pyb.device_name
 
     def write(self, response: bytes | str) -> None:
         'Call the console writer for output (convert "str" to "bytes").'
