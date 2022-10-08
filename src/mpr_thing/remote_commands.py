@@ -25,13 +25,6 @@ class RemoteCmd(BaseCommands):
     def __init__(self, board: Board):
         super().__init__(board)
 
-    def write(self, response: bytes | str) -> None:
-        'Call the console writer for output (convert "str" to "bytes").'
-        if response:
-            if not isinstance(response, bytes):
-                response = bytes(response, 'utf-8')
-            self.board.writer(response)
-
     # File commands
     def do_fs(self, args: Argslist) -> None:
         """
@@ -274,10 +267,10 @@ class RemoteCmd(BaseCommands):
         if args:
             print('uname: unexpected args:', args)
         self.load_board_params()
-        self.write((
+        print(
             'Micropython {nodename} ({unique_id}) '
             '{version} {sysname} {machine}'
-            .format_map(self.params)).encode('utf-8') + b'\r\n')
+            .format_map(self.params))
 
     def do_time(self, args: Argslist) -> None:
         """
@@ -303,9 +296,8 @@ class RemoteCmd(BaseCommands):
                     t.tm_hour, t.tm_min, t.tm_sec, 0)))
         from time import asctime
         t = self.board.get_localtime()
-        self.write(asctime(
-            (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode('utf-8')
-            + b'\r\n')
+        print(asctime(
+            (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)))
 
     def do_mount(self, args: Argslist) -> None:
         """
@@ -318,9 +310,7 @@ class RemoteCmd(BaseCommands):
             opts, *args = args
         path = args[0] if args else '.'
         self.board.mount(path, opts)
-        self.write(
-            'Mounted local folder {} on /remote\r\n'
-            .format(args).encode('utf-8'))
+        print(f'Mounted local folder {args} on /remote')
         self.board.exec('print(uos.getcwd())')
 
     def do_umount(self, args: Argslist) -> None:
