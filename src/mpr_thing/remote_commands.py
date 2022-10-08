@@ -293,11 +293,10 @@ class RemoteCmd(Commands):
                 (t.tm_year, t.tm_mon, t.tm_mday, 0,
                     t.tm_hour, t.tm_min, t.tm_sec, 0)))
         from time import asctime
-        with catcher(self.board.write):
-            t = self.board.eval('import utime;print(utime.localtime())')
-            self.write(asctime(
-                (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode('utf-8')
-                + b'\r\n')
+        t = self.board.get_localtime()
+        self.write(asctime(
+            (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)).encode('utf-8')
+            + b'\r\n')
 
     def do_mount(self, args: Argslist) -> None:
         """
@@ -336,15 +335,12 @@ class RemoteCmd(Commands):
         """
         Print the free and used flash storage:
             %df [dir1, dir2, ...]"""
+        df_list = self.board.df(args)
         print("{:10} {:>9} {:>9} {:>9} {:>3}% {}".format(
             "", "Bytes", "Used", "Available", "Use", "Mounted on"))
-        for dir in (args or ['/']):
-            with catcher(self.board.write):
-                _, bsz, tot, free, *_ = self.board.eval(
-                    'print(uos.statvfs("{}"))'.format(dir))
-                print("{:10} {:9d} {:9d} {:9d} {:3d}% {}".format(
-                    dir, tot * bsz, (tot - free) * bsz, free * bsz,
-                    round(100 * (1 - free / tot)), dir))
+        for name, total, used, free in df_list:
+            print("{:10} {:9d} {:9d} {:9d} {:3d}% {}".format(
+                name, total, used, free, round(100 * used / total), name))
 
     def do_gc(self, args: Argslist) -> None:
         """
@@ -353,54 +349,6 @@ class RemoteCmd(Commands):
             %gc"""
         if args:
             print('gc: unexpected args:', args)
-        with catcher(self.board.write):
-            before, after = self.board.eval(
-                'from gc import mem_free,collect;'
-                'b=mem_free();collect();print([b,mem_free()])')
-            print("Before GC: Free bytes =", before)
-            print("After  GC: Free bytes =", after)
-
-    # Extra commands
-    def do_shell(self, args: Argslist) -> None:
-        """
-        Execute shell commands from the "%" prompt as well, eg:
-            %!date"""
-        if args and len(args) == 2 and args[0] == 'cd':
-            os.chdir(args[1])
-        else:
-            os.system(' '.join(args))   # TODO: Use interactive shell
-
-    def do_alias(self, args: Argslist) -> None:
-        """
-        Assign an alias for other commands: eg:
-            %alias ll="ls -l" lr="ls -lR"
-            %alias connect='exec "network.WLAN(0).connect(\"{}\", \"{}\")"'
-        You can use "{}" or "{2}" format specifiers to consume arguments when
-        you use the alias: eg:
-            %connect ssid password
-        Any arguments which are not consumed by format specfiers will be
-        added to the command after expanding the alias, eg:
-            %ll /lib
-        """
-        if not args:
-            for k, v in self.alias.items():
-                print(f'alias "{k}"="{v}"')
-            return
-
-        for arg in args:
-            alias, value = arg.split('=', maxsplit=1)
-            if not alias or not value:
-                print('Invalid alias: "{}"'.format(arg))
-                continue
-            self.alias[alias] = value
-
-        # Now, save the aliases in the options file
-        self.save_options()
-
-    def do_unalias(self, args: Argslist) -> None:
-        """
-        Delete aliases which has been set with the %alias command:
-            %unalias ll [...]"""
-        for arg in args:
-            del self.alias[arg]
-        self.save_options()
+        before, after = self.board.gc()
+        print("Before GC: Free bytes =", before)
+        print("After  GC: Free bytes =", after)

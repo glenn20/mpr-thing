@@ -439,3 +439,25 @@ class Board:
                     print(
                         'put: skipping "{}", use "-r" to copy directories.'
                         .format(str(file)))
+
+    def df(
+            self,
+            dirs:  Filenames
+            ) -> Sequence[tuple[str, int, int, int]]:
+        ret: list[tuple[str, int, int, int]] = []
+        for dir in (dirs or ['/']):
+            _, bsz, tot, free, *_ = self.eval(
+                'print(list(uos.statvfs("{}")))'.format(dir))
+            ret.append((dir, tot * bsz, (tot - free) * bsz, free * bsz))
+        return ret
+
+    def gc(self) -> tuple[int, int]:
+        before, after = self.eval(
+            'from gc import mem_free,collect;'
+            '_b=mem_free();collect();print([_b,mem_free()])')
+        return (int(before), int(after))
+
+    def get_localtime(self) -> Sequence[int]:
+        return [
+            int(i) for i in
+            self.eval('import utime;print(list(utime.localtime()))')]
