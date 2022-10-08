@@ -1,9 +1,11 @@
+#!/usr/bin/env python3
+
 # MIT License: Copyright (c) 2021 @glenn20
 
 # vscode-fold=1
 
 
-import select, re, sys, time, locale
+import select, re, time, locale
 from typing import Callable
 from serial import Serial
 
@@ -178,4 +180,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(mpremote_main.main())
+    main()
