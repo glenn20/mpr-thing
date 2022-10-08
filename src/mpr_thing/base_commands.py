@@ -31,11 +31,13 @@ RC_FILE      = '.mpr-thing.rc'
 # and utility methods as well as some necessary overrides for the cmd.Cmd class.
 class BaseCommands(cmd.Cmd):
     base_prompt: str = '\r>>> '
+    doc_leader: str = (
+        '================================================================')
     doc_header: str = (
         'Execute "%magic" commands at the micropython prompt, eg: %ls /\n'
         'Use "%%" to enter multiple command mode.\n'
         'Further help is available for the following commands:\n'
-        '======================================================')
+        + doc_leader)
     ruler = ''  # Cmd.ruler is broken if doc_header is multi-line
     remote_cmds = (  # Commands that complete filenames on the board
         'fs', 'ls', 'cat', 'edit', 'touch', 'mv', 'cp', 'rm', 'get',
@@ -226,6 +228,10 @@ class BaseCommands(cmd.Cmd):
                         self.colour.file(f.name, dir=f.is_dir()),
                         spaces[len(f.name):], sep='',
                         end=('' if n % cols and n < len(files) else '\n'))
+
+    def do_include(self, args: Argslist) -> None:
+        for arg in args:
+            self.load_command_file(arg)
 
     def do_shell(self, args: Argslist) -> None:
         """
