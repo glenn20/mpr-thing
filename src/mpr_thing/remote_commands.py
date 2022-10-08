@@ -12,19 +12,25 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .catcher import catcher
 from .board import Board
-from .base_commands import Commands, Argslist
+from .base_commands import BaseCommands, Argslist
 
 
 # The commands we support at the remote command prompt.
 # Inherits from base_commands.Commands which contains all the
 # initialisation and utility methods and overrides for cmd.Cmd class.
-class RemoteCmd(Commands):
+class RemoteCmd(BaseCommands):
     'A class to run commands on the micropython board.'
 
     def __init__(self, board: Board):
         super().__init__(board)
+
+    def write(self, response: bytes | str) -> None:
+        'Call the console writer for output (convert "str" to "bytes").'
+        if response:
+            if not isinstance(response, bytes):
+                response = bytes(response, 'utf-8')
+            self.board.writer(response)
 
     # File commands
     def do_fs(self, args: Argslist) -> None:
@@ -148,7 +154,7 @@ class RemoteCmd(Commands):
         files: list[str] = []
         for f in args:
             if self.is_remote(f, pwd):
-                print("get: skipping /remote mounted folder:", f)
+                print("get: skipping files in /remote mounted folder:", f)
             else:
                 files.append(f)
         dest = files.pop()[1:] if files[-1].startswith(':') else '.'
@@ -167,7 +173,7 @@ class RemoteCmd(Commands):
         pwd: str = self.params['pwd']
         dest = args.pop()[1:] if args[-1].startswith(':') else pwd
         if self.is_remote(dest, pwd):
-            print("%put: do not use on mounted folder:", pwd)
+            print("%put: do not put files into /remote mounted folder:", pwd)
             return
         self.board.put(args, dest, opts + 'rv')
 
