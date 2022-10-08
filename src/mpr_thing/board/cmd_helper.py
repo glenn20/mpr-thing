@@ -73,9 +73,9 @@ class _MagicHelper:
         f1.close()
         f2.close()
 
-    def cp_dir(self, dirr, dest, opts):
+    def cp_dir(self, dir, dest, opts):
         if 'r' not in opts:
-            print('Can not copy directory', dirr, ': Use "%cp -r"')
+            print('Can not copy directory', dir, ': Use "%cp -r"')
             return
         dest = self.path(dest, self.basename(dir))
         try:
