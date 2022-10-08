@@ -221,13 +221,16 @@ class RemoteCmd(Commands):
             %exec print(34 * 35)
         "\\n" will be substituted with the end-of-line character, eg:
             %exec 'print("one")\\nprint("two")' """
-        self.board.exec(' '.join(args).replace('\\n', '\n'))
+        response = self.board.exec(' '.join(args).replace('\\n', '\n'))
+        if response:
+            print(response)
 
     def do_eval(self, args: Argslist) -> None:
         """
         Eval and print the python code on the board, eg.:
             %eval 34 * 35"""
-        self.board.exec('print({})'.format(' '.join(args)))
+        response = self.board.exec('print({})'.format(' '.join(args)))
+        print(response)
 
     def do_run(self, args: Argslist) -> None:
         """

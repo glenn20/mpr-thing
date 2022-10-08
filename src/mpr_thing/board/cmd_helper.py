@@ -9,7 +9,7 @@ class _MagicHelper:
 
     @staticmethod
     def path(a, b):
-        return f'{a}{"/" if a and a != "/" else ""}{b}'
+        return a + ("/" if a and a != "/" else "") + b
 
     @staticmethod
     def is_dir(mode):
@@ -21,35 +21,42 @@ class _MagicHelper:
 
     def ls_files(self, files):
         print("[", end="")
+        sep = ""
         for f in files:
             try:
                 s = uos.stat(f)
-                print((f, (s[0], s[6], s[8])), end=",")
+                print('{}["{}",[{},{},{}]]'.format(
+                    sep, f, s[0], s[6], s[8]), end="")
             except OSError:
-                print((f, None), end=",")
+                print('{}["f",[]]'.format(sep), end="")
+            sep = ","
         print("]")
 
     def ls_dirs(self, dirs, opts):
         recursive = 'R' in opts
         long = "l" in opts
         print("[", end="")
+        dsep = ""
         while dirs:
             d = dirs.pop()
-            print(f'("{d}", [', end="")
-            for f in uos.ilistdir(d):
+            print('{}["{}", ['.format(dsep, d), end="")
+            sep = ""
+            for f in uos.ilistdir(d):  # type: ignore
                 p = self.path(d, f[0])
                 if recursive and self.is_dir(f[1]):
                     dirs.append(p)
                 if long:
                     try:
                         stat = uos.stat(p)
-                        x = (f[0], f[1], stat[6], stat[8])
+                        x = '{}["{}",{},{},{}]'.format(sep, f[0], f[1], stat[6], stat[8])
                     except OSError:
-                        x = ()
+                        x = '{}[]'.format(sep)
                 else:
-                    x = (f[0], f[1])
-                print(x, end=",")
-            print(']),')
+                    x = '{}["{}",{}]'.format(sep, f[0], f[1])
+                print(x, end="")
+                sep = ","
+            print(']]')
+            dsep = ","
         print("]")
 
     # Using a fixed buffer reduces heap allocation
@@ -61,7 +68,7 @@ class _MagicHelper:
         f1, f2 = open(f1, "rb"), open(f2, "wb")
         n = f1.readinto(self._buf)
         while n > 0:
-            f2.write(self._buf, n)
+            f2.write(self._buf, n)  # type: ignore
             n = f1.readinto(self._buf)
         f1.close()
         f2.close()
@@ -79,7 +86,7 @@ class _MagicHelper:
                 print('Can not overwrite non-directory',
                       dest, 'with directory', dir)
                 return
-        for f, m, *_ in uos.ilistdir(dir):
+        for f, m, *_ in uos.ilistdir(dir):  # type: ignore
             if self.is_dir(m) and 'r' in opts:
                 self.cp_dir(self.path(dir, f), dest, opts)
             else:
@@ -127,15 +134,18 @@ class _MagicHelper:
     # TODO: see if chdir through tree reduces heap allocation
     def rm(self, files, opts):
         for f in files:
-            try: m = uos.stat(f)[0]
-            except OSError: print('No such file:', f); break
+            try:
+                m = uos.stat(f)[0]
+            except OSError:
+                print('No such file:', f)
+                break
             if not self.is_dir(m):
                 if 'v' in opts: print(f)
                 if 'n' not in opts: uos.remove(f)
             else:
                 if 'r' in opts:
                     self.rm(
-                        (self.path(f, i[0]) for i in uos.ilistdir(f)), opts)
+                        (self.path(f, i[0]) for i in uos.ilistdir(f)), opts)  # type: ignore
                     if 'v' in opts: print(f)
                     if 'n' not in opts: uos.rmdir(f)
                 else:
@@ -143,9 +153,8 @@ class _MagicHelper:
                           .format(f))
 
     def pr(self):   # Return some dynamic values for the command prompt
-        print(
-            '("', uos.getcwd(), '",', gc.mem_alloc(), ',', gc.mem_free(), ')',
-            sep='')
+        print('[\"{}\",{},{}]'.format(
+            uos.getcwd(), gc.mem_alloc(), gc.mem_free()))  # type: ignore
 
 
 _helper = _MagicHelper()

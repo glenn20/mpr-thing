@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import os, re
 from pathlib import Path
+import json
 from typing import Any, Sequence, Iterable, Callable, Optional
 
-from mpremote.pyboard import stdout_write_bytes
 from mpremote.pyboardextended import PyboardExtended
 
-from .catcher import catcher, last_exception, raw_repl as real_raw_repl
+from .catcher import raw_repl
 from .remote_path import RemotePath
 
 # Type aliases
@@ -70,34 +70,27 @@ class Board:
                 response = bytes(response, 'utf-8')
             self.writer(response)
 
-    def raw_repl(self, silent: bool = False) -> Any:
+    def raw_repl(self) -> Any:
         'Return a context manager for the micropython raw repl.'
-        return real_raw_repl(self.pyb, self.write, silent=silent)
+        return raw_repl(self.pyb, self.write)
 
     # Execute stuff on the micropython board
-    def exec_(
+    def exec(
             self,
             code:       bytes | str,
-            reader:     Optional[Writer] = None,
-            silent:     bool = False,
-            ) -> bytes:
+            ) -> str:
         'Execute some code on the micropython board.'
         response: bytes = b''
-        with self.raw_repl(silent=silent):
-            response = self.pyb.exec_(code, reader)
-        return response
+        with self.raw_repl():
+            response = self.pyb.exec_(code)
+        return response.decode().strip()
 
     def eval(
             self,
             code:       str,
-            silent:     bool = False,
             ) -> Any:
-        # TODO: Use json for return values from board - for safety
-        response = self.exec_(code, silent=silent)
-        return eval(response)
-
-    def exec(self, code: bytes | str) -> None:
-        self.exec_(code, stdout_write_bytes)
+        response = self.exec(code)
+        return json.loads(response)  # Catch exceptions at top level
 
     def complete(self, word: str) -> list[str]:
         'Complete the python name on the board.'
@@ -141,7 +134,7 @@ class Board:
         self.exec('uos.chdir({})'.format(repr(filename)))
 
     def pwd(self) -> str:
-        pwd: str = self.eval('print(repr(uos.getcwd()))')
+        pwd: str = self.eval('print("\\"{}\\"".format(uos.getcwd()))')
         return pwd
 
     def mkdir(self, filename: str) -> None:
@@ -174,14 +167,9 @@ class Board:
             filenames:  Filenames
             ) -> Iterable[RemotePath]:
         'Return a list of files (RemotePath) on board for list of filenames.'
-        with catcher(self.write, silent=True):
-            ls: list[tuple[str, Optional[tuple[int, int, int]]]]
-            ls = self.eval(f'_helper.ls_files({filenames})', False)
-            return [
-                RemotePath(f).set_modes(stat, exists=True)
-                if stat else
-                RemotePath(f).set_exists(False)
-                for f, stat in ls]
+        # ls: list[tuple[str, Optional[tuple[int, int, int]]]]
+        ls = self.eval(f'_helper.ls_files({filenames})')
+        return [RemotePath(f).set_modes(stat) for f, stat in ls]
 
     def ls_dirs(
             self,
@@ -193,21 +181,16 @@ class Board:
         Returns a list: [(dirname, [Path1, Path2, Path3..]), ...]
         """
         remotefiles = []
-        with catcher(self.write):
-            # [("dir1", [["file1", mode, size, ..], ["file2", ...]), (..), ...]
-            listing: list[tuple[str, list[tuple[str, int, int, int]]]]
-            listing = self.eval(f'_helper.ls_dirs({dir_list},"{opts}")', False)
-            listing.sort(key=lambda item: item[0])  # Sort by directory pathname
-            for dir, file_list in listing:
-                # sort each directory listing by filename
-                file_list.sort(key=lambda item: item[0])
-            remotefiles = [  # Convert to lists of RemotePath objects
-                (dir, [RemotePath(dir, f[0]).set_modes(f[1:]) for f in file_list])
-                for dir, file_list in listing]
-        if last_exception:
-            print('ls_dir(): list directory \'{}\' failed.'.format(dir_list))
-            print(last_exception)
-            return []
+        # [("dir1", [["file1", mode, size, ..], ["file2", ...]), (..), ...]
+        # listing: list[tuple[str, list[tuple[str, int, int, int]]]]
+        listing = self.eval(f'_helper.ls_dirs({dir_list},"{opts}")')
+        listing.sort(key=lambda item: item[0])  # Sort by directory pathname
+        for dir, file_list in listing:
+            # sort each directory listing by filename
+            file_list.sort(key=lambda item: item[0])
+        remotefiles = [  # Convert to lists of RemotePath objects
+            (dir, [RemotePath(f[0]).set_modes(f[1:]) for f in filelist])
+            for dir, filelist in listing]
         return remotefiles
 
     def ls_dir(self, dir: str) -> list[RemotePath]:
