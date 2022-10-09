@@ -85,13 +85,14 @@ class Board:
     def exec(
             self,
             code:       bytes | str,
+            silent:     bool = True
             ) -> str:
         'Execute some code on the micropython board.'
         response: str = ""
         if self.debug & DEBUG_EXEC:
             print(f"Board.exec(): code = {code}")
         with self.raw_repl():
-            response = self.pyb.exec_(code).decode().strip()
+            response = self.pyb.exec_(code, self.writer if not silent else None).decode().strip()
         if self.debug & DEBUG_EXEC:
             print(f"Board.exec(): resp = {response}")
         return response
@@ -101,7 +102,7 @@ class Board:
             code:       str,
             ) -> Any:
         response = self.exec(code)
-        return json.loads(response)  # Catch exceptions at top level
+        return json.loads(response.replace("'", '"'))  # Catch exceptions at top level
 
     def complete(self, word: str) -> list[str]:
         'Complete the python name on the board.'
@@ -136,8 +137,6 @@ class Board:
             filenames:  Filenames,
             opts:       str
             ) -> None:
-        if isinstance(filenames, str):
-            filenames = [filenames]
         self.exec(f'_helper.rm({[fstrip(f) for f in filenames]},"{opts}")')
 
     def cd(self, filename: str) -> None:
@@ -178,7 +177,7 @@ class Board:
             ) -> Iterable[RemotePath]:
         'Return a list of files (RemotePath) on board for list of filenames.'
         # ls: list[tuple[str, Optional[tuple[int, int, int]]]]
-        ls = self.eval(f'_helper.ls_files({filenames})')
+        ls = self.eval(f'_helper.ls_files({filenames})') if filenames else []
         return [RemotePath(f).set_modes(stat) for f, stat in ls]
 
     def ls_dirs(
@@ -192,14 +191,14 @@ class Board:
         """
         remotefiles = []
         # [("dir1", [["file1", mode, size, ..], ["file2", ...]), (..), ...]
-        # listing: list[tuple[str, list[tuple[str, int, int, int]]]]
+        # listing: list[tuple[str, list[tuple[str, tuple[int, int, int]]]]]
         listing = self.eval(f'_helper.ls_dirs({dir_list},"{opts}")')
-        listing.sort(key=lambda item: item[0])  # Sort by directory pathname
+        listing.sort(key=lambda d: d[0])  # Sort by directory pathname
         for dir, file_list in listing:
             # sort each directory listing by filename
-            file_list.sort(key=lambda item: item[0])
+            file_list.sort(key=lambda f: f[0])
         remotefiles = [  # Convert to lists of RemotePath objects
-            (dir, [RemotePath(f[0]).set_modes(f[1:]) for f in filelist])
+            (dir, [RemotePath(f[0]).set_modes(f[1]) for f in filelist])
             for dir, filelist in listing]
         return remotefiles
 
@@ -236,33 +235,51 @@ class Board:
         'Copy files and directories on the micropython board.'
         if isinstance(filenames, str):
             filenames = [filenames]
-        files = list(self.ls_files([*filenames, dest]))
-        dest_f = files.pop()
-        if len(files) == 1:
-            # First - check for some special cases...
-            f = files[0]
-            if str(f) == str(dest_f):
-                print('%cp: Skipping: source is same as dest:', files[0])
+        filelist = list(self.ls_files([*filenames, dest]))
+        dest_f = filelist.pop()
+        dest = str(dest_f)
+        missing = [str(f) for f in filelist if not f.exists()]
+        files = [str(f) for f in filelist if f.is_file()]
+        dirs = [str(d) + "/" for d in filelist if d.is_dir()]
+
+        # Check for invalid copy requests
+        if missing:
+            print(f"%cp: Error: Can not copy missing files: {missing}.")
+            return
+        if dirs and 'r' not in opts:
+            print(f"%cp: Error: Can not copy dirs (use \"cp -r\"): {dirs}")
+            return
+        for f in filelist:
+            if f.is_dir() and f in dest_f.parents:
+                print(f'%cp: Error: {dest!r} is subfolder of {f!r}')
                 return
-            elif f.is_file() and (dest_f.is_file() or not dest_f.exists()):
-                # cp file1 file2
-                self.exec(
-                    f'_helper.cp_file("{str(f)}","{str(dest_f)}","{opts}")')
-                return
-            elif f.is_dir() and not dest_f.exists():
-                # cp dir1 dir2 (where dir2 does not exist)
-                if 'v' in opts: print(str(dest))
-                if 'n' not in opts: self.mkdir(str(dest))
-                self.exec(
-                    f'_helper.cp_dir('
-                    f'"{str(f) + "/."}",'
-                    f'"{str(dest_f)}",'
-                    f'"{str(dest_f)}")')
+            if str(f) == dest:
+                print(f'%cp: Error: source is same as dest: {f!r}')
                 return
 
-        # Copy the files and directories to dest
+        opts = f"{'v' in opts},{'n' in opts}"
+        if len(filelist) == 1:
+            # First - check for some special cases...
+            if files and (dest_f.is_file() or not dest_f.exists()):
+                # cp file1 file2
+                self.exec(
+                    f'_helper.cp_file({files[0]!r},{dest!r},{opts})',
+                    silent=False)
+                return
+            elif dirs and not dest_f.exists():
+                # cp dir1 dir2 (where dir2 does not exist)
+                self.exec(
+                    f'_helper.cp_dir({dirs[0]!r},{dest + "/"!r},{opts})',
+                    silent=False)
+                return
+
+        if not dest_f.is_dir():
+            print(f"%cp: Destination must be an existing directory: {dest}")
+            return
+
         self.exec(
-            f'_helper.cp({[str(f) for f in files]},"{str(dest_f)}","{opts}")')
+            f'_helper.cp({files},{dirs},{dest + "/"!r},{opts})',
+            silent=False)
 
     def get_file(
             self,
