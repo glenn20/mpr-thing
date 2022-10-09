@@ -126,11 +126,38 @@ class Board:
             ) -> None:
         if isinstance(filenames, str):
             filenames = [filenames]
-        self.exec(
-            f'_helper.mv('
-            f'{[fstrip(f) for f in filenames]},'
-            f'"{fstrip(dest)}",'
-            f'"{opts}")')
+        filelist = list(self.ls_files([*filenames, dest]))
+        dest_f = filelist.pop()
+        dest = str(dest_f)
+        missing = [str(f) for f in filelist if not f.exists()]
+
+        # Check for invalid mv requests
+        if missing:
+            print(f"%mv: Error: Can not mv missing files: {missing}.")
+            return
+        for f in filelist:
+            if f.is_dir() and f in dest_f.parents:
+                print(f'%mv: Error: {dest!r} is subfolder of {f!r}')
+                return
+            if str(f) == dest:
+                print(f'%mv: Error: source is same as dest: {f!r}')
+                return
+
+        if len(filelist) == 1 and not dest_f.is_dir():
+            # First - check for special cases...
+            f = filelist[0]
+            if not dest_f.exists() or f.is_file():
+                if 'v' in opts: print(f"{str(f)} -> {str(dest)}")
+                self.exec(f"uos.rename({str(f)!r},{dest!r})")
+            else:
+                print(f'%mv: Error: Destination must be directory: {dest!r}')
+            return
+
+        # Move files to dest which is a directory
+        for f in filelist:
+            f2 = dest_f / f.name
+            if 'v' in opts: print(f"{str(f)} -> {str(f2)}")
+            self.exec(f'uos.rename({str(f)!r},{str(f2)!r})')
 
     def rm(
             self,

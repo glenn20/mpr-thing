@@ -76,23 +76,6 @@ class _MagicHelper:
         for f in dirs:
             self.cp_dir(f, dest + self.basename(f), v, n)
 
-    def mv(self, files, dest, opts):
-        try:
-            dir_dest = uos.stat(dest)[0] & IS_DIR
-        except OSError:
-            dir_dest = False
-        if len(files) == 1 and not dir_dest:
-            if 'v' in opts: print(dest)
-            if 'n' not in opts: uos.rename(files[0], dest)
-            return
-        elif not dir_dest:
-            print("Destination must be a directory.")
-            return
-        for f in files:
-            f2 = self.path(dest, self.basename(f))
-            if 'v' in opts: print(f2)
-            if 'n' not in opts: uos.rename(f, f2)
-
     def complete(self, base, word):
         print([w for w in (dir(base) if base else dir()) if w.startswith(word)])
 
