@@ -59,7 +59,9 @@ class BaseCommands(cmd.Cmd):
         self.prompt             = self.base_prompt
         self.prompt_fmt         = ('{bold-cyan}{id} {yellow}{platform}'
                                    ' ({free}){bold-blue}{pwd}> ')
-        self.prompt_colour      = 'yellow'  # Colour of the short prompt
+        self.prompt_colour      = 'cyan'  # Colour of the short prompt
+        self.command_colour     = 'reset'  # Colour of the commandline
+        self.output_colour      = 'reset'  # Colour of the command output
         self.alias:  dict[str, str] = {}    # Command aliases
         self.params: dict[str, Any] = {}    # Params we can use in prompt
         self.names:  dict[str, str] = {}    # Map device unique_ids to names
@@ -188,7 +190,8 @@ class BaseCommands(cmd.Cmd):
                 # Make colour reset act like a colour stack
                 self.colour.colour_stack(
                     # Build the prompt from prompt_fmt (set with %set cmd)
-                    self.prompt_fmt.format_map(prompt_map))))
+                    self.prompt_fmt.format_map(prompt_map)))
+                + self.colour.ansi(self.command_colour))
 
     def print_files(self, files: Iterable[RemotePath], opts: str) -> None:
         '''Print a file listing (long or short style) from data returned
@@ -281,6 +284,8 @@ class BaseCommands(cmd.Cmd):
         if not args:
             print(f'set prompt="{self.prompt_fmt}"')
             print(f'set promptcolour="{self.prompt_colour}"')
+            print(f'set commandcolour="{self.command_colour}"')
+            print(f'set outputcolour="{self.output_colour}"')
             print(f'set name="{self.names[self.params["unique_id"]]}"')
             print(f'set names=\'{json.dumps(self.names)}\'')
             print(f'set lscolour=\'{json.dumps(self.lsspec)}\'')
@@ -309,7 +314,19 @@ class BaseCommands(cmd.Cmd):
                 if ansi[0] == '\x1b':
                     self.prompt_colour = value
                 else:
-                    print("%set: invalid colour:", self.prompt_colour)
+                    print("%set: invalid colour:", value)
+            elif key in ['commandcolour', 'commandcolor']:
+                ansi = self.colour.ansi(value)
+                if ansi[0] == '\x1b':
+                    self.command_colour = value
+                else:
+                    print("%set: invalid colour:", value)
+            elif key in ['outputcolour', 'outputcolor']:
+                ansi = self.colour.ansi(value)
+                if ansi[0] == '\x1b':
+                    self.output_colour = value
+                else:
+                    print("%set: invalid colour:", value)
             elif key == 'names':
                 try:
                     self.names.update(json.loads(value))
@@ -344,6 +361,8 @@ class BaseCommands(cmd.Cmd):
                 '# Edit with caution: will be overwritten by mpr-thing.\n')
             f.write(f'set prompt="{self.prompt_fmt}"\n')
             f.write(f'set promptcolour="{self.prompt_colour}"\n')
+            f.write(f'set commandcolour="{self.command_colour}"\n')
+            f.write(f'set outputcolour="{self.output_colour}"\n')
             f.write(f'set names=\'{json.dumps(self.names)}\'\n')
             f.write(f'set lscolour=\'{json.dumps(self.lsspec)}\'\n')
             for name, value in self.alias.items():
@@ -354,7 +373,9 @@ class BaseCommands(cmd.Cmd):
         Set some options, eg:
             %set prompt='{cyan}{name}@{dev}-{sysname}-({free}){blue}{pwd}> '
             %set prompt='{cyan}{name}@{dev}({free}){green}{lcd1}:{blue}{pwd}> '
-            %set promptcolour=yellow
+            %set promptcolour=cyan
+            %set commandcolour=yellow
+            %set outputcolour=cyan
             %set promptcolor=cyan
         Set and save the name of the current board (for use in prompt):
             %set name=node05
@@ -560,14 +581,16 @@ class BaseCommands(cmd.Cmd):
         self.load_options_file()
         self.load_rc_file()
         if not self.multi_cmd_mode:
-            self.prompt = \
-                self.colour(self.prompt_colour, self.base_prompt) + '%'
+            self.prompt = (
+                self.colour(self.prompt_colour, self.base_prompt)
+                + self.colour.ansi(self.command_colour) + '%')
 
     def postloop(self) -> None:
         print(self.base_prompt, end='')  # Re-print the micropython prompt
 
     def onecmd(self, line: str) -> bool:
         """Override the default Cmd.onecmd()."""
+        print(self.colour.ansi("reset"), end="")
         if isinstance(line, list):
             # List of str is pushed back onto cmdqueue in self.split()
             args = line
