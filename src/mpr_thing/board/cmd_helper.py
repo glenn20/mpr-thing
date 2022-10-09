@@ -79,26 +79,15 @@ class _MagicHelper:
     def complete(self, base, word):
         print([w for w in (dir(base) if base else dir()) if w.startswith(word)])
 
-    # TODO: see if chdir through tree reduces heap allocation
-    def rm(self, files, opts):
+    def rm(self, files, v, n):
         for f in files:
-            try:
-                m = uos.stat(f)[0]
-            except OSError:
-                print('No such file:', f)
-                break
-            if not m & IS_DIR:
-                if 'v' in opts: print(f)
-                if 'n' not in opts: uos.remove(f)
+            if not uos.stat(f)[0] & IS_DIR:
+                if v: print(f)
+                if not n: uos.remove(f)
             else:
-                if 'r' in opts:
-                    self.rm(
-                        (self.path(f, i[0]) for i in uos.ilistdir(f)), opts)  # type: ignore
-                    if 'v' in opts: print(f)
-                    if 'n' not in opts: uos.rmdir(f)
-                else:
-                    print('Can not remove directory "{}": Use "%rm -r"'
-                          .format(f))
+                self.rm(((f + "/" + i[0]) for i in uos.ilistdir(f)), v, n)
+                if v: print(f)
+                if not n: uos.rmdir(f)
 
     def pr(self):   # Return some dynamic values for the command prompt
         print('[\"{}\",{},{}]'.format(

@@ -118,54 +118,6 @@ class Board:
     def touch(self, filename: str) -> None:
         self.exec(f'open("{filename}", "a").close()')
 
-    def mv(
-            self,
-            filenames:  Filenames,
-            dest:       str,
-            opts:       str
-            ) -> None:
-        if isinstance(filenames, str):
-            filenames = [filenames]
-        filelist = list(self.ls_files([*filenames, dest]))
-        dest_f = filelist.pop()
-        dest = str(dest_f)
-        missing = [str(f) for f in filelist if not f.exists()]
-
-        # Check for invalid mv requests
-        if missing:
-            print(f"%mv: Error: Can not mv missing files: {missing}.")
-            return
-        for f in filelist:
-            if f.is_dir() and f in dest_f.parents:
-                print(f'%mv: Error: {dest!r} is subfolder of {f!r}')
-                return
-            if str(f) == dest:
-                print(f'%mv: Error: source is same as dest: {f!r}')
-                return
-
-        if len(filelist) == 1 and not dest_f.is_dir():
-            # First - check for special cases...
-            f = filelist[0]
-            if not dest_f.exists() or f.is_file():
-                if 'v' in opts: print(f"{str(f)} -> {str(dest)}")
-                self.exec(f"uos.rename({str(f)!r},{dest!r})")
-            else:
-                print(f'%mv: Error: Destination must be directory: {dest!r}')
-            return
-
-        # Move files to dest which is a directory
-        for f in filelist:
-            f2 = dest_f / f.name
-            if 'v' in opts: print(f"{str(f)} -> {str(f2)}")
-            self.exec(f'uos.rename({str(f)!r},{str(f2)!r})')
-
-    def rm(
-            self,
-            filenames:  Filenames,
-            opts:       str
-            ) -> None:
-        self.exec(f'_helper.rm({[fstrip(f) for f in filenames]},"{opts}")')
-
     def cd(self, filename: str) -> None:
         self.exec(f'uos.chdir({filename!r})')
 
@@ -248,10 +200,70 @@ class Board:
                 if filenames else [RemotePath('.')])
         for f in missing:
             print(f"ls: cannot access {f.as_posix()!r}: No such file or directory")
-        x = [('', files)]
-        y = [d.as_posix() if d.as_posix() != "" else "." for d in dirs]
-        lsdirs = self.ls_dirs(y, opts)
-        return x + lsdirs
+        lsdirs = self.ls_dirs(
+            [d.as_posix() if d.as_posix() != "" else "." for d in dirs], opts)
+        return [('', files)] + lsdirs
+
+    def mv(
+            self,
+            filenames:  Filenames,
+            dest:       str,
+            opts:       str
+            ) -> None:
+        if isinstance(filenames, str):
+            filenames = [filenames]
+        filelist = list(self.ls_files([*filenames, dest]))
+        dest_f = filelist.pop()
+        dest = str(dest_f)
+        missing = [str(f) for f in filelist if not f.exists()]
+
+        # Check for invalid mv requests
+        if missing:
+            print(f"%mv: Error: Can not mv missing files: {missing}.")
+            return
+        for f in filelist:
+            if f.is_dir() and f in dest_f.parents:
+                print(f'%mv: Error: {dest!r} is subfolder of {f!r}')
+                return
+            if str(f) == dest:
+                print(f'%mv: Error: source is same as dest: {f!r}')
+                return
+
+        if len(filelist) == 1 and not dest_f.is_dir():
+            # First - check for special cases...
+            f = filelist[0]
+            if not dest_f.exists() or f.is_file():
+                if 'v' in opts: print(f"{str(f)} -> {str(dest)}")
+                self.exec(f"uos.rename({str(f)!r},{dest!r})")
+            else:
+                print(f'%mv: Error: Destination must be directory: {dest!r}')
+            return
+
+        # Move files to dest which is a directory
+        for f in filelist:
+            f2 = dest_f / f.name
+            if 'v' in opts: print(f"{str(f)} -> {str(f2)}")
+            self.exec(f'uos.rename({str(f)!r},{str(f2)!r})')
+
+    def rm(
+            self,
+            filenames:  Filenames,
+            opts:       str
+            ) -> None:
+        filelist = list(self.ls_files(filenames))
+        missing = [str(f) for f in filelist if not f.exists()]
+        dirs = [str(d) + "/" for d in filelist if d.is_dir()]
+
+        # Check for invalid rm requests
+        if missing:
+            print(f"%cp: Error: Can not rm missing files: {missing}.")
+            return
+        if dirs and 'r' not in opts:
+            print(f"%cp: Error: Can not rm dirs (use \"rm -r\"): {dirs}")
+            return
+
+        opts = f"{'v' in opts},{'n' in opts}"
+        self.exec(f'_helper.rm({[str(f) for f in filelist]},{opts})', silent=False)
 
     def cp(
             self,
