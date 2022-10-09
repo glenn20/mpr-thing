@@ -481,7 +481,7 @@ class BaseCommands(cmd.Cmd):
         dir, word = word[:sep + 1] or '.', word[sep + 1:]
         files = self.board.ls_dir(dir) or []
         return (                    # Just return the generator
-            str(f)
+            dir + str(f)
             for f in files
             if str(f)[0] != '.' and fnmatch.fnmatch(str(f), word))
 
