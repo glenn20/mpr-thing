@@ -33,10 +33,6 @@ CODE_COMPRESS_RULES: list[tuple[bytes, bytes, dict[str, int]]] = [
 DEBUG_EXEC = 1
 
 
-def fstrip(f: str) -> str:
-    return f.rstrip('/') if f != '/' else f
-
-
 # A collection of helper functions for file listings and filename completion
 # to be uploaded to the micropython board and processed on the local host.
 class Board:
@@ -198,11 +194,11 @@ class Board:
         filelist = list(self.ls_files(filenames))
         missing = (f for f in filelist if not f.exists())
         files = (f for f in filelist if f.is_file())
-        dirs = ((d.as_posix() for d in filelist if d.is_dir())
-                if filenames else ['.'])
+        dirs = ((d.slashify() for d in filelist if d.is_dir())
+                if filenames else ['./'])
         for f in missing:
             print(f"ls: cannot access {f.as_posix()!r}: No such file or directory")
-        lsdirs = self.ls_dirs((d + "/" if d != "/" else d for d in dirs), opts)
+        lsdirs = self.ls_dirs(dirs, opts)
         return itertools.chain([('', files)], lsdirs)
 
     def check_files(

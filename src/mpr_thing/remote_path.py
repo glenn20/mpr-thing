@@ -39,6 +39,10 @@ class RemotePath(PurePosixPath):
         self._exists = bool(stat)
         return self  # So we can f = RemotePath('/main.py').set_modes(...)
 
+    def slashify(self) -> str:
+        d = self.as_posix()
+        return d if d.endswith("/") else d + "/" if d else d
+
     def set_exists(self, exists: bool) -> RemotePath:
         """Set the existence state of the file."""
         self._exists = exists

@@ -27,6 +27,7 @@ class _MagicHelper:
     def ls_dirs(self, dirs, R, l):
         print("[", end="")
         dsep = ""
+        # If recursive, subdirs will be added to end of "dirs" as we go.
         while dirs:
             d = dirs.pop()
             print('{}["{}", ['.format(dsep, d), end="")
@@ -34,7 +35,7 @@ class _MagicHelper:
             for f in uos.ilistdir(d):  # type: ignore
                 p = d + f[0]
                 if R and f[1] & IS_DIR:
-                    dirs.append(p + "/")
+                    dirs.append(p + "/")  # Add dir to list for processing
                 s = self.stat(p) if l else [f[1]]
                 print('{}["{}", {}]'.format(sep, f[0], s), end="")
                 sep = ","
