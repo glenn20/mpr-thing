@@ -9,11 +9,6 @@ IS_DIR = const(0x4000)
 
 
 class _MagicHelper:
-
-    @staticmethod
-    def path(a, b):
-        return a + ("/" if a and a != "/" else "") + b
-
     @staticmethod
     def basename(f):
         return f[f.rstrip('/').rfind('/') + 1:]
@@ -29,19 +24,18 @@ class _MagicHelper:
     def ls_files(self, files):
         print([[f, self.stat(f)] for f in files])
 
-    def ls_dirs(self, dirs, opts):
+    def ls_dirs(self, dirs, R, l):
         print("[", end="")
         dsep = ""
         while dirs:
             d = dirs.pop()
-            ds = d.rstrip("/") + "/"  # Ensure ends in a single "/"
             print('{}["{}", ['.format(dsep, d), end="")
             sep = ""
             for f in uos.ilistdir(d):  # type: ignore
-                p = ds + f[0]
-                if 'R' in opts and f[1] & IS_DIR:
-                    dirs.append(p)
-                s = self.stat(p) if 'l' in opts else [f[1]]
+                p = d + f[0]
+                if R and f[1] & IS_DIR:
+                    dirs.append(p + "/")
+                s = self.stat(p) if l else [f[1]]
                 print('{}["{}", {}]'.format(sep, f[0], s), end="")
                 sep = ","
             print(']]')
@@ -76,18 +70,18 @@ class _MagicHelper:
         for f in dirs:
             self.cp_dir(f, dest + self.basename(f), v, n)
 
-    def complete(self, base, word):
-        print([w for w in (dir(base) if base else dir()) if w.startswith(word)])
-
     def rm(self, files, v, n):
         for f in files:
             if not uos.stat(f)[0] & IS_DIR:
                 if v: print(f)
                 if not n: uos.remove(f)
             else:
-                self.rm(((f + "/" + i[0]) for i in uos.ilistdir(f)), v, n)
+                self.rm(((f + "/" + i[0]) for i in uos.ilistdir(f)), v, n)  # type: ignore
                 if v: print(f)
                 if not n: uos.rmdir(f)
+
+    def complete(self, base, word):
+        print([w for w in (dir(base) if base else dir()) if w.startswith(word)])
 
     def pr(self):   # Return some dynamic values for the command prompt
         print('[\"{}\",{},{}]'.format(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import os, re
 from pathlib import Path
 import json
+import itertools
 from typing import Any, Sequence, Iterable, Callable, Optional
 
 from mpremote.pyboardextended import PyboardExtended
@@ -157,13 +158,13 @@ class Board:
         'Return a list of files (RemotePath) on board for list of filenames.'
         # ls: list[tuple[str, Optional[tuple[int, int, int]]]]
         ls = self.eval(f'_helper.ls_files({filenames})') if filenames else []
-        return [RemotePath(f).set_modes(stat) for f, stat in ls]
+        return (RemotePath(f).set_modes(stat) for f, stat in ls)
 
     def ls_dirs(
             self,
-            dir_list:   list[str],
+            dir_list:   Iterable[str],
             opts:       str = ""
-            ) -> list[tuple[str, list[RemotePath]]]:
+            ) -> Iterable[tuple[str, Iterable[RemotePath]]]:
         """Return a listing of files in directories on the board.
         Takes a list of directory pathnames and a listing options string.
         Returns a list: [(dirname, [Path1, Path2, Path3..]), ...]
@@ -171,38 +172,80 @@ class Board:
         remotefiles = []
         # [("dir1", [["file1", mode, size, ..], ["file2", ...]), (..), ...]
         # listing: list[tuple[str, list[tuple[str, tuple[int, int, int]]]]]
-        listing = self.eval(f'_helper.ls_dirs({dir_list},"{opts}")')
+        opts = f"{'R' in opts},{'l' in opts}"
+        listing = self.eval(f'_helper.ls_dirs({list(dir_list)},{opts})')
         listing.sort(key=lambda d: d[0])  # Sort by directory pathname
         for dir, file_list in listing:
             # sort each directory listing by filename
             file_list.sort(key=lambda f: f[0])
-        remotefiles = [  # Convert to lists of RemotePath objects
-            (dir, [RemotePath(f[0]).set_modes(f[1]) for f in filelist])
-            for dir, filelist in listing]
+        remotefiles = (  # Convert to lists of RemotePath objects
+            (dir, (RemotePath(f[0]).set_modes(f[1]) for f in filelist))
+            for dir, filelist in listing)
         return remotefiles
 
-    def ls_dir(self, dir: str) -> list[RemotePath]:
-        dir_files = self.ls_dirs([dir])
-        return dir_files[0][1] if dir_files else []
+    def ls_dir(self, dir: str) -> Iterable[RemotePath]:
+        dir_files = next(iter(self.ls_dirs([dir])))
+        return dir_files[1] if dir_files else []
 
     def ls(
             self,
             filenames:  Filenames,
             opts:       str
-            ) -> Iterable[tuple[str, list[RemotePath]]]:
+            ) -> Iterable[tuple[str, Iterable[RemotePath]]]:
         "Return a list of files on the board."
         filenames = [filenames] if isinstance(filenames, str) else list(filenames)
         filenames.sort
-        filelist = self.ls_files(filenames)
-        missing = [f for f in filelist if not f.exists()]
-        files = [f for f in filelist if f.is_file()]
-        dirs = ([d for d in filelist if d.is_dir()]
-                if filenames else [RemotePath('.')])
+        filelist = list(self.ls_files(filenames))
+        missing = (f for f in filelist if not f.exists())
+        files = (f for f in filelist if f.is_file())
+        dirs = ((d.as_posix() for d in filelist if d.is_dir())
+                if filenames else ['.'])
         for f in missing:
             print(f"ls: cannot access {f.as_posix()!r}: No such file or directory")
-        lsdirs = self.ls_dirs(
-            [d.as_posix() if d.as_posix() != "" else "." for d in dirs], opts)
-        return [('', files)] + lsdirs
+        lsdirs = self.ls_dirs((d + "/" if d != "/" else d for d in dirs), opts)
+        return itertools.chain([('', files)], lsdirs)
+
+    def check_files(
+            self,
+            cmd:        str,
+            filenames:  Filenames,
+            dest:       str = "",
+            opts:       str = ""
+            ) -> tuple[list[RemotePath], Optional[RemotePath]]:
+        if isinstance(filenames, str):
+            filenames = [filenames]
+        filelist = list(self.ls_files([*filenames, dest] if dest else filenames))
+        dest_f = filelist.pop() if dest else None
+        missing = [str(f) for f in filelist if not f.exists()]
+        dirs = [str(d) + "/" for d in filelist if d.is_dir()]
+
+        # Check for invalid requests
+        if missing:
+            print(f"%{cmd}: Error: Missing files: {missing}.")
+            return ([], None)
+        if dest_f:
+            for f in filelist:
+                if f.is_dir() and f in dest_f.parents:
+                    print(f'%{cmd}: Error: {dest!r} is subfolder of {f!r}')
+                    return ([], None)
+                if str(f) == dest:
+                    print(f'%{cmd}: Error: source is same as dest: {f!r}')
+                    return ([], None)
+        if dirs and cmd in ["rm", "cp", "get", "put"] and 'r' not in opts:
+            print(f"%{cmd}: Error: Can not process dirs (use \"{cmd} -r\"): {dirs}")
+            return ([], None)
+
+        return (filelist, dest_f)
+
+    def rm(
+            self,
+            filenames:  Filenames,
+            opts:       str
+            ) -> None:
+        filelist, _ = self.check_files("rm", filenames, "", opts)
+
+        opts = f"{'v' in opts},{'n' in opts}"
+        self.exec(f'_helper.rm({[str(f) for f in filelist]},{opts})', silent=False)
 
     def mv(
             self,
@@ -210,24 +253,9 @@ class Board:
             dest:       str,
             opts:       str
             ) -> None:
-        if isinstance(filenames, str):
-            filenames = [filenames]
-        filelist = list(self.ls_files([*filenames, dest]))
-        dest_f = filelist.pop()
-        dest = str(dest_f)
-        missing = [str(f) for f in filelist if not f.exists()]
-
-        # Check for invalid mv requests
-        if missing:
-            print(f"%mv: Error: Can not mv missing files: {missing}.")
+        filelist, dest_f = self.check_files("mv", filenames, dest, opts)
+        if not filelist or not dest_f:
             return
-        for f in filelist:
-            if f.is_dir() and f in dest_f.parents:
-                print(f'%mv: Error: {dest!r} is subfolder of {f!r}')
-                return
-            if str(f) == dest:
-                print(f'%mv: Error: source is same as dest: {f!r}')
-                return
 
         if len(filelist) == 1 and not dest_f.is_dir():
             # First - check for special cases...
@@ -245,26 +273,6 @@ class Board:
             if 'v' in opts: print(f"{str(f)} -> {str(f2)}")
             self.exec(f'uos.rename({str(f)!r},{str(f2)!r})')
 
-    def rm(
-            self,
-            filenames:  Filenames,
-            opts:       str
-            ) -> None:
-        filelist = list(self.ls_files(filenames))
-        missing = [str(f) for f in filelist if not f.exists()]
-        dirs = [str(d) + "/" for d in filelist if d.is_dir()]
-
-        # Check for invalid rm requests
-        if missing:
-            print(f"%cp: Error: Can not rm missing files: {missing}.")
-            return
-        if dirs and 'r' not in opts:
-            print(f"%cp: Error: Can not rm dirs (use \"rm -r\"): {dirs}")
-            return
-
-        opts = f"{'v' in opts},{'n' in opts}"
-        self.exec(f'_helper.rm({[str(f) for f in filelist]},{opts})', silent=False)
-
     def cp(
             self,
             filenames:  Filenames,
@@ -272,29 +280,12 @@ class Board:
             opts:       str
             ) -> None:
         'Copy files and directories on the micropython board.'
-        if isinstance(filenames, str):
-            filenames = [filenames]
-        filelist = list(self.ls_files([*filenames, dest]))
-        dest_f = filelist.pop()
+        filelist, dest_f = self.check_files("cp", filenames, dest, opts)
+        if not filelist or not dest_f:
+            return
         dest = str(dest_f)
-        missing = [str(f) for f in filelist if not f.exists()]
         files = [str(f) for f in filelist if f.is_file()]
         dirs = [str(d) + "/" for d in filelist if d.is_dir()]
-
-        # Check for invalid copy requests
-        if missing:
-            print(f"%cp: Error: Can not copy missing files: {missing}.")
-            return
-        if dirs and 'r' not in opts:
-            print(f"%cp: Error: Can not copy dirs (use \"cp -r\"): {dirs}")
-            return
-        for f in filelist:
-            if f.is_dir() and f in dest_f.parents:
-                print(f'%cp: Error: {dest!r} is subfolder of {f!r}')
-                return
-            if str(f) == dest:
-                print(f'%cp: Error: source is same as dest: {f!r}')
-                return
 
         opts = f"{'v' in opts},{'n' in opts}"
         if len(filelist) == 1:
@@ -313,7 +304,7 @@ class Board:
                 return
 
         if not dest_f.is_dir():
-            print(f"%cp: Destination must be an existing directory: {dest}")
+            print(f"%cp: Destination must be a directory: {dest}")
             return
 
         self.exec(
