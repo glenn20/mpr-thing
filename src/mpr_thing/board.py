@@ -291,7 +291,7 @@ class Board:
         'Copy a file "filename" from the board to the local "dest" folder.'
         if verbose: print(str(dest))
         if not dry_run:
-            with self.raw_repl():
+            with self.raw_repl(("get_file", filename, dest)):
                 self.pyb.fs_get(str(filename), str(dest))
 
     def get_dir(
@@ -305,8 +305,10 @@ class Board:
         # dir is subdirectory name for recursive
         base: Optional[Path] = None
         for subdir, filelist in self.ls([str(dir)], '-R'):
+            srcdir = Path(subdir)
             # First non-empty subdir is base of a recursive listing
-            base = Path(subdir).parent if subdir and base is None else base
+            if subdir and base is None:
+                base = Path(subdir).parent
             # Destination subdir is dest + relative path from dir to base
             destdir = (
                 dest / Path(subdir).relative_to(base)) if base else Path()
@@ -315,9 +317,10 @@ class Board:
                 if not dry_run:
                     os.mkdir(destdir)
             for f in filelist:
+                f1 = srcdir / f.name
                 f2 = destdir / f.name
                 if f.is_file():
-                    self.get_file(str(f), str(f2), verbose, dry_run)
+                    self.get_file(str(f1), str(f2), verbose, dry_run)
 
     def get(
             self,
