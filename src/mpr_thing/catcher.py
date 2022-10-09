@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from traceback import print_exc
-from typing import Callable, Generator
+from typing import Callable, Generator, Any
 
 from mpremote.pyboard import PyboardError
 from mpremote.pyboardextended import PyboardExtended
@@ -45,6 +45,7 @@ def catcher() -> Generator[None, None, None]:
 def raw_repl(
     pyb:        PyboardExtended,
     write_fn:   Writer,
+    message:    Any = None,
     soft_reset: bool = False,
 ) -> Generator[None, None, None]:
     """Enter the raw_repl on the micropython board and trap and report
@@ -69,7 +70,7 @@ def raw_repl(
         pyb.serial.write(b"\r\x03\x03")
         raise
     except PyboardError as exc:
-        write_fn(b"PyboardError: ")
+        write_fn("PyboardError: {!r}\r\n".format(message).encode())
         if len(exc.args) == 3:    # Raised by Pyboard.exec_()
             write_fn(exc.args[1])
             write_fn(exc.args[2])

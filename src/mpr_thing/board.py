@@ -77,9 +77,9 @@ class Board:
                 response = bytes(response, 'utf-8')
             self.writer(response)
 
-    def raw_repl(self) -> Any:
+    def raw_repl(self, message: Any = None) -> Any:
         'Return a context manager for the micropython raw repl.'
-        return raw_repl(self.pyb, self.write)
+        return raw_repl(self.pyb, self.write, message)
 
     # Execute stuff on the micropython board
     def exec(
@@ -91,7 +91,7 @@ class Board:
         response: str = ""
         if self.debug & DEBUG_EXEC:
             print(f"Board.exec(): code = {code}")
-        with self.raw_repl():
+        with self.raw_repl(code):
             response = self.pyb.exec_(code, self.writer if not silent else None).decode().strip()
         if self.debug & DEBUG_EXEC:
             print(f"Board.exec(): resp = {response}")
