@@ -43,7 +43,7 @@ class AnsiColour:
             self.spec[".py"] = "01;36"
         # Dict of ansi colour specs by name
         self.colour = {  # ie: {'black': '00;30', ... 'white': '00;37'}
-            name: "00;3{}".format(i)
+            name: f"00;3{i}"
             for i, name in enumerate(
                 ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
             )
@@ -64,7 +64,8 @@ class AnsiColour:
         self._enable = enable
 
     def ansi(self, spec: str, bold: Optional[bool] = None) -> str:
-        return "\x1b[{}m".format(self.bold(self.colour.get(spec, spec), bold))
+        spec = self.bold(self.colour.get(spec, spec), bold)
+        return f"\x1b[{spec}m"
 
     def colourise(
         self, spec: str, word: str, bold: Optional[bool] = None, reset: str = "reset"
@@ -75,7 +76,7 @@ class AnsiColour:
             return word
         spec, reset = (self.colour.get(spec, spec), self.colour.get(reset, reset))
         spec = self.bold(spec, bold)
-        return "\x1b[{}m{}\x1b[{}m".format(spec, word, reset)
+        return f"\x1b[{spec}m{word}\x1b[{reset}m"
 
     def __call__(
         self, spec: str, word: str, bold: Optional[bool] = None, reset: str = "reset"
