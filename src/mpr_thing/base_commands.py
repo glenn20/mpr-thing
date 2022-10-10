@@ -305,6 +305,7 @@ class BaseCommands(cmd.Cmd):
             print(f'set prompt="{self.prompt_fmt}"')
             print(f'set promptcolour="{self.prompt_colour}"')
             print(f'set commandcolour="{self.command_colour}"')
+            print(f'set shellcolour="{self.shell_colour}"')
             print(f'set outputcolour="{self.output_colour}"')
             print(f'set name="{self.names[self.params["unique_id"]]}"')
             print(f'set names=\'{json.dumps(self.names)}\'')
@@ -339,6 +340,12 @@ class BaseCommands(cmd.Cmd):
                 ansi = self.colour.ansi(value)
                 if ansi[0] == '\x1b':
                     self.command_colour = value
+                else:
+                    print("%set: invalid colour:", value)
+            elif key in ['shellcolour', 'shellcolor']:
+                ansi = self.colour.ansi(value)
+                if ansi[0] == '\x1b':
+                    self.shell_colour = value
                 else:
                     print("%set: invalid colour:", value)
             elif key in ['outputcolour', 'outputcolor']:
@@ -382,6 +389,7 @@ class BaseCommands(cmd.Cmd):
             f.write(f'set prompt="{self.prompt_fmt}"\n')
             f.write(f'set promptcolour="{self.prompt_colour}"\n')
             f.write(f'set commandcolour="{self.command_colour}"\n')
+            f.write(f'set shellcolour="{self.shell_colour}"\n')
             f.write(f'set outputcolour="{self.output_colour}"\n')
             f.write(f'set names=\'{json.dumps(self.names)}\'\n')
             f.write(f'set lscolour=\'{json.dumps(self.lsspec)}\'\n')
@@ -411,8 +419,10 @@ class BaseCommands(cmd.Cmd):
             f'\nPrompts are python format strings and may include:\n    '),
             end='')
         self.load_board_params()
-        for i, k in enumerate(self.params.keys()):
+        for i, k in enumerate(k for k in self.params.keys() if not k.startswith("ansi")):
             print(f"{'{' + k + '}':15}", end='' if (i + 1) % 5 else '\n    ')
+        print("and the ansi256 color codes: {ansi0}, {ansi1}, ...{ansi255}")
+
         print('\n')
         print(inspect.cleandoc("""
         Where:

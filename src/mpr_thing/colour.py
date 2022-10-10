@@ -58,6 +58,9 @@ class AnsiColour:
         self.colour["bold"] = "1"
         self.colour["underline"] = "4"
         self.colour["reverse"] = "7"
+        self.colour.update(  # Add ansi256 colour specs
+            {f"ansi{i}": f"38;5;{i}" for i in range(256)}
+        )
 
     def enable(self, enable: bool = True) -> None:
         """Enable or disable colourising of text with ansi escapes."""
