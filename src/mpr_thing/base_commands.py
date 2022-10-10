@@ -50,6 +50,7 @@ class BaseCommands(cmd.Cmd):
     def __init__(self, board: Board):
         self.colour             = AnsiColour()
         self.multi_cmd_mode     = False
+        self.shell_mode         = False
         self.alias:  dict[str, str] = {}    # Command aliases
         self.params: dict[str, Any] = {}    # Params we can use in prompt
         self.names:  dict[str, str] = {}    # Map device unique_ids to names
@@ -242,8 +243,26 @@ class BaseCommands(cmd.Cmd):
             %!date"""
         if args and len(args) == 2 and args[0] == 'cd':
             os.chdir(args[1])
-        else:
-            os.system(' '.join(args))   # TODO: Use interactive shell
+            return
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            names: list[tuple[str, Path]] = []
+            new_args: list[str] = []
+            for arg in args:
+                if arg.startswith(":"):
+                    basename = Path(arg[1:]).name
+                    dest = Path(tmpdir) / basename
+                    self.board.get(arg[1:], tmpdir)
+                    names.append((arg[1:], dest))
+                    new_args.append(str(dest))
+                else:
+                    new_args.append(arg)
+
+            os.system(' '.join(new_args))   # TODO: Use interactive shell
+
+            # for arg, dest in names:
+            #     remote.board.put(str(dest), arg)
 
     def do_alias(self, args: Argslist) -> None:
         """
@@ -602,6 +621,8 @@ class BaseCommands(cmd.Cmd):
             readline.write_history_file(self.history_file)
 
             # A command line read from the input
+            if self.shell_mode:
+                line = "shell " + line
             cmd, arg, line = self.parseline(line)
             if not line:
                 return self.emptyline()
@@ -627,13 +648,14 @@ class BaseCommands(cmd.Cmd):
         # Exit if we are in single command mode and no commands in the queue
         return not self.multi_cmd_mode and not self.cmdqueue
 
-    def cmdloop(self, intro: Optional[str] = None) -> None:
+    def run(self, prefix: bytes = b"%") -> None:
         'Catch exceptions and restart the Cmd.cmdloop().'
         stop = False
+        self.shell_mode = (prefix == b"!")
         while not stop:
             stop = True
             try:
-                super().cmdloop(intro)
+                self.cmdloop()
             except KeyboardInterrupt:
                 stop = not self.multi_cmd_mode
                 print()
@@ -641,6 +663,7 @@ class BaseCommands(cmd.Cmd):
                 print("Error in command:", err)
                 # raise
                 stop = not self.multi_cmd_mode
+        self.shell_mode = False
 
     def emptyline(self) -> bool:   # Else empty lines repeat last command
         return not self.multi_cmd_mode

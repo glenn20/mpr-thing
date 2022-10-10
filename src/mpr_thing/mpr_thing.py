@@ -15,7 +15,6 @@ from mpremote.pyboardextended import PyboardExtended
 from mpremote.console import ConsolePosix, ConsoleWindows
 
 from .board import Board
-from .local_commands import LocalCmd
 from .remote_commands import RemoteCmd
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
@@ -74,7 +73,7 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
     'An overload function for the main repl loop in "mpremote".'
 
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
-    local, remote = LocalCmd(), RemoteCmd(Board(pyb, console_out_write))
+    remote = RemoteCmd(Board(pyb, console_out_write))
     prompt = b"\n>>> "
 
     while True:
@@ -108,28 +107,18 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
                     console_out_write(repr(er).encode('utf-8'))
                 pyb.exit_raw_repl()
                 beginning_of_line = True
-            elif (c == b"!" and at_prompt  # Magic sequence if at start of line
+            elif (c in b"%!" and at_prompt  # Magic sequence if at start of line
                     and (beginning_of_line or
                          cursor_column(
                              console_in, console_out_write) == len(prompt))):
                 console_out_write(b"\x1b[2K")  # Clear other chars on line
                 console_in.exit()
                 try:
-                    local.cmdloop()
+                    remote.run(c)
                 finally:
                     console_in.enter()
-                pyb.serial.write(b"\x0d")  # Force another prompt
-                beginning_of_line = True
-            elif (c == b"%" and at_prompt  # Magic sequence if at start of line
-                    and (beginning_of_line or
-                         cursor_column(
-                             console_in, console_out_write) == len(prompt))):
-                console_out_write(b"\x1b[2K")  # Clear other chars on line
-                console_in.exit()
-                try:
-                    remote.cmdloop()
-                finally:
-                    console_in.enter()
+                if c == b"!":
+                    pyb.serial.write(b"\x0d")  # Force another prompt
                 beginning_of_line = True
             elif c == b"\x0d":      # ctrl-m: carriage return
                 pyb.serial.write(c)
