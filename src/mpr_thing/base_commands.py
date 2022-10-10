@@ -480,33 +480,41 @@ class BaseCommands(cmd.Cmd):
         'Perform filename completion on "word".'
         cmd         = line.split()[0]
         sep         = word.rfind('/')
-        dir, word   = word[:sep + 1], word[sep + 1:]
-        if (cmd == 'set' and 'prompt' in line) or cmd == 'echo':
+        pre, post   = word[:sep + 1], word[sep + 1:]
+        if cmd in ('set', 'echo') and not self.shell_mode:
             # Complete on board params, eg: set prompt="{de[TAB]
             sep = word.rfind('{')
-            prefix, word = word[:sep + 1], word[sep + 1:]
+            pre, post = word[:sep + 1], word[sep + 1:]
             return (
-                [prefix + k for k in self.params if k.startswith(word)]
+                [pre + k for k in self.params if k.startswith(post)]
                 if sep >= 0 else [])
-        elif cmd in self.noglob_cmds:
+        elif cmd in self.noglob_cmds and not self.shell_mode:
             # No filename completion for this command
             return []
-        elif cmd in self.remote_cmds:
+        elif cmd in self.remote_cmds and not self.shell_mode:
             # Execute filename completion on the board.
-            lsdir = self.board.ls_dir(dir or '.') or []
+            lsdir = self.board.ls_dir(pre or '.') or []
             files = [
-                dir + str(f) + ('/' if f.is_dir() else '')
-                for f in lsdir if f.name.startswith(word)]
+                pre + str(f) + ('/' if f.is_dir() else '')
+                for f in lsdir if f.name.startswith(post)]
         else:
-            # Execute filename completion on local host
-            try:
-                _, dirs, files = next(os.walk(dir or '.'))
-                files = [dir + f for f in files if f.startswith(word)]
-                files.extend(dir + f + '/' for f in dirs if f.startswith(word))
-                files.sort()
-            except OSError as err:
-                print(OSError, err)
-                return []
+            # Complete names starting with ":" as remote files.
+            if word and word[0] == ":":
+                pre, post = pre.lstrip(":"), post.lstrip(":")
+                lsdir = self.board.ls_dir(pre or '.') or []
+                files = [
+                    ":" + pre + str(f) + ('/' if f.is_dir() else '')
+                    for f in lsdir if f.name.startswith(post)]
+            else:
+                # Execute filename completion on local host
+                try:
+                    _, dirs, files = next(os.walk(pre or '.'))
+                    files = [pre + f for f in files if f.startswith(post)]
+                    files.extend(pre + f + '/' for f in dirs if f.startswith(post))
+                    files.sort()
+                except OSError as err:
+                    print(OSError, err)
+                    return []
 
         # Return all filenames or only directories if requested
         return (
