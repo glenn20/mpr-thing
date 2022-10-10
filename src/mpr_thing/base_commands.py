@@ -61,9 +61,10 @@ class BaseCommands(cmd.Cmd):
         self.prompt             = self.base_prompt
         self.prompt_fmt         = ('{bold-cyan}{id} {yellow}{platform}'
                                    ' ({free}){bold-blue}{pwd}> ')
-        self.prompt_colour      = 'cyan'  # Colour of the short prompt
-        self.command_colour     = 'reset'  # Colour of the commandline
-        self.output_colour      = 'reset'  # Colour of the command output
+        self.prompt_colour      = 'cyan'    # Colour of the short prompt
+        self.shell_colour       = 'magenta'  # Colour of the short prompt
+        self.command_colour     = 'reset'   # Colour of the commandline
+        self.output_colour      = 'reset'   # Colour of the command output
         self.alias:  dict[str, str] = {}    # Command aliases
         self.params: dict[str, Any] = {}    # Params we can use in prompt
         self.names:  dict[str, str] = {}    # Map device unique_ids to names
@@ -610,15 +611,17 @@ class BaseCommands(cmd.Cmd):
         self.load_rc_file()
         if not self.multi_cmd_mode:
             self.prompt = (
-                self.colour(self.prompt_colour, self.base_prompt)
-                + self.colour.ansi(self.command_colour) + '%')
+                self.colour(self.prompt_colour, self.base_prompt) +
+                ((self.colour.ansi(self.command_colour) + "%")
+                 if not self.shell_mode else
+                 (self.colour.ansi(self.shell_colour) + "!")))
 
     def postloop(self) -> None:
         print(self.base_prompt, end='')  # Re-print the micropython prompt
 
     def onecmd(self, line: str) -> bool:
         """Override the default Cmd.onecmd()."""
-        print(self.colour.ansi("reset"), end="")
+        print(f"{self.colour.ansi('reset')}", end="", flush=True)
         if isinstance(line, list):
             # List of str is pushed back onto cmdqueue in self.split()
             args = line
