@@ -10,8 +10,9 @@
 from __future__ import annotations
 
 import os, re, readline, time, cmd, shutil
+from pathlib import Path
 import json, inspect, shlex, glob, fnmatch, itertools
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable
 
 from .catcher import catcher
 from .remote_path import RemotePath
