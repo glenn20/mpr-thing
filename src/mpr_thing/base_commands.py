@@ -1,8 +1,7 @@
-# commands.py: Support for mpremote-style filesystem commands at the
-# micropython prompt using an Ipython-like '%' escape sequence.
+# basecommands.py: Command line processor for mpremote-style filesystem commands
+# at the micropython prompt using an Ipython-like '%' escape sequence.
 #
-# MIT License
-# Copyright (c) 2021 @glenn20
+# MIT License Copyright (c) 2021 @glenn20
 
 # For python<3.10: Allow method type annotations to reference enclosing class
 # Allow type1 | type2 instead of Union[type1, type2]
