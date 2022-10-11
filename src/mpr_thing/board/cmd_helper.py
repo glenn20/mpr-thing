@@ -74,12 +74,11 @@ class _MagicHelper:
     def rm(self, files, v, n):
         for f in files:
             if not uos.stat(f)[0] & IS_DIR:
-                if v: print(f)
                 if not n: uos.remove(f)
             else:
-                self.rm(((f + "/" + i[0]) for i in uos.ilistdir(f)), v, n)  # type: ignore
-                if v: print(f)
+                self.rm(("{}/{}".format(f, i[0]) for i in uos.ilistdir(f)), v, n)  # type: ignore
                 if not n: uos.rmdir(f)
+            if v: print(f)
 
     def complete(self, base, word):
         print([w for w in (dir(base) if base else dir()) if w.startswith(word)])
