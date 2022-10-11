@@ -137,15 +137,15 @@ class BaseCommands(cmd.Cmd):
                     r'^COM([0-9]+)$', r'c\1',
                     device_name.lower()))
         with catcher():
-            self.params['platform'] = self.board.eval(
-                'import sys;print("\\"{}\\"".format(sys.platform))')
+            self.params['platform'] = self.board.eval_json(
+                'import sys;print("{!r}".format(sys.platform))')
         with catcher():
-            self.params['unique_id'] = self.board.eval(
+            self.params['unique_id'] = self.board.eval_json(
                 'from machine import unique_id;'
-                'print("\\"{}\\"".format(unique_id().hex(":")))')
+                'print("{!r}".format(unique_id().hex(":")))')
         with catcher():
             self.params.update(      # Update the board params from uos.uname()
-                self.board.eval("print(repr(eval(\"dict{}\".format(uos.uname()))).replace(\"'\", '\"'))"))
+                self.board.eval_json("print(repr(eval(\"dict{!r}\".format(uos.uname()))))"))
         self.params['id'] = self.params['unique_id'][-8:]  # Last 3 octets
         # Add the ansi colour names
         self.params.update(
@@ -156,7 +156,7 @@ class BaseCommands(cmd.Cmd):
         self.load_board_params()
         pwd, alloc, free = '', 0, 0
         with catcher():
-            pwd, alloc, free = self.board.eval('_helper.pr()')
+            pwd, alloc, free = self.board.eval_json('_helper.pr()')
 
         free_pc = round(100 * free / (alloc + free)) if alloc > 0 else 0
         free_delta = max(0, self.params.get('free', free) - free)

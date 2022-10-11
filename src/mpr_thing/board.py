@@ -94,17 +94,19 @@ class Board:
             print(f"Board.exec(): resp = {response}")
         return response
 
-    def eval(
+    def eval_json(
             self,
             code:       str,
             ) -> Any:
+        'Execute code on board and interpret the output as json.'
         response = self.exec(code)
+        # Safer to use json to construct objects rather than eval().
         return json.loads(response.replace("'", '"'))  # Catch exceptions at top level
 
     def complete(self, word: str) -> list[str]:
         'Complete the python name on the board.'
         words = [None] + word.rsplit('.', 1)  # Split module and class names
-        completions: list[str] = self.eval(f'_helper.complete({words[-2]}, "{words[-1]}")')
+        completions: list[str] = self.eval_json(f'_helper.complete({words[-2]}, "{words[-1]}")')
         return completions
 
     def cat(self, filename: str) -> None:
@@ -119,7 +121,7 @@ class Board:
         self.exec(f'uos.chdir({filename!r})')
 
     def pwd(self) -> str:
-        pwd: str = self.eval('print("\\"{}\\"".format(uos.getcwd()))')
+        pwd: str = self.eval_json('print("\\"{}\\"".format(uos.getcwd()))')
         return pwd
 
     def mkdir(self, filename: str) -> None:
@@ -153,7 +155,7 @@ class Board:
             ) -> Iterable[RemotePath]:
         'Return a list of files (RemotePath) on board for list of filenames.'
         # ls: list[tuple[str, Optional[tuple[int, int, int]]]]
-        ls = self.eval(f'_helper.ls_files({filenames})') if filenames else []
+        ls = self.eval_json(f'_helper.ls_files({filenames})') if filenames else []
         return (RemotePath(f).set_modes(stat) for f, stat in ls)
 
     def ls_dirs(
@@ -169,7 +171,7 @@ class Board:
         # [("dir1", [["file1", mode, size, ..], ["file2", ...]), (..), ...]
         # listing: list[tuple[str, list[tuple[str, tuple[int, int, int]]]]]
         opts = f"{'R' in opts},{'l' in opts}"
-        listing = self.eval(f'_helper.ls_dirs({list(dir_list)},{opts})')
+        listing = self.eval_json(f'_helper.ls_dirs({list(dir_list)},{opts})')
         listing.sort(key=lambda d: d[0])  # Sort by directory pathname
         for dir, file_list in listing:
             # sort each directory listing by filename
@@ -208,8 +210,6 @@ class Board:
             dest:       str = "",
             opts:       str = ""
             ) -> tuple[list[RemotePath], Optional[RemotePath]]:
-        if isinstance(filenames, str):
-            filenames = [filenames]
         filelist = list(self.ls_files([*filenames, dest] if dest else filenames))
         dest_f = filelist.pop() if dest else None
         missing = [str(f) for f in filelist if not f.exists()]
@@ -461,13 +461,13 @@ class Board:
             ) -> Sequence[tuple[str, int, int, int]]:
         ret: list[tuple[str, int, int, int]] = []
         for dir in (dirs or ['/']):
-            _, bsz, tot, free, *_ = self.eval(
+            _, bsz, tot, free, *_ = self.eval_json(
                 f'print(list(uos.statvfs("{dir}")))')
             ret.append((dir, tot * bsz, (tot - free) * bsz, free * bsz))
         return ret
 
     def gc(self) -> tuple[int, int]:
-        before, after = self.eval(
+        before, after = self.eval_json(
             'from gc import mem_free,collect;'
             '_b=mem_free();collect();print([_b,mem_free()])')
         return (int(before), int(after))
@@ -475,4 +475,4 @@ class Board:
     def get_localtime(self) -> Sequence[int]:
         return [
             int(i) for i in
-            self.eval('import utime;print(list(utime.localtime()))')]
+            self.eval_json('import utime;print(list(utime.localtime()))')]
