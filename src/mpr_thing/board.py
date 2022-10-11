@@ -98,15 +98,18 @@ class Board:
             self,
             code:       str,
             ) -> Any:
-        'Execute code on board and interpret the output as json.'
+        '''Execute code on board and interpret the output as json.
+        Single quotes (') in output will be changed to " before processing.'''
         response = self.exec(code)
         # Safer to use json to construct objects rather than eval().
-        return json.loads(response.replace("'", '"'))  # Catch exceptions at top level
+        # Exceptions will be caught at the top level.
+        return json.loads(response.replace("'", '"'))
 
     def complete(self, word: str) -> list[str]:
         'Complete the python name on the board.'
         words = [None] + word.rsplit('.', 1)  # Split module and class names
-        completions: list[str] = self.eval_json(f'_helper.complete({words[-2]}, "{words[-1]}")')
+        completions: list[str] = \
+            self.eval_json(f'_helper.complete({words[-2]}, "{words[-1]}")')
         return completions
 
     def cat(self, filename: str) -> None:
@@ -137,26 +140,25 @@ class Board:
         if not os.path.isdir(path):
             print("%mount: No such directory:", path)
             return
-        if isinstance(self.pyb, PyboardExtended):
-            with self.raw_repl():
-                self.pyb.mount_local(path, 'l' in opts)
+        with self.raw_repl():
+            self.pyb.mount_local(path, 'l' in opts)
 
     def umount(self) -> None:
         'Unmount any Virtual Filesystem mounted at "/remote" on the board.'
         # Must chdir before umount or bad things happen.
         self.exec('uos.getcwd().startswith("/remote") and uos.chdir("/")')
-        if isinstance(self.pyb, PyboardExtended):
-            with self.raw_repl():
-                self.pyb.umount_local()
+        with self.raw_repl():
+            self.pyb.umount_local()
 
     def ls_files(
             self,
             filenames:  Filenames
             ) -> Iterable[RemotePath]:
         'Return a list of files (RemotePath) on board for list of filenames.'
-        # ls: list[tuple[str, Optional[tuple[int, int, int]]]]
-        ls = self.eval_json(f'_helper.ls_files({filenames})') if filenames else []
-        return (RemotePath(f).set_modes(stat) for f, stat in ls)
+        # Board returns: [["f1", s0, s1, s2], ["f2", s0, s1, s2], ...]]
+        # Where s0 is mode, s1 is size and s2 is mtime
+        ls = self.eval_json(f'_helper.ls_files({filenames})')
+        return (RemotePath(f[0]).set_modes(f[1:]) for f in ls)
 
     def ls_dirs(
             self,
@@ -167,9 +169,11 @@ class Board:
         Takes a list of directory pathnames and a listing options string.
         Returns a list: [(dirname, [Path1, Path2, Path3..]), ...]
         """
+        # From the board: [
+        #  ["dir",  [["f1" s0, s1, s2], ["f2", s0..], ..]],
+        #  ["dir2", [["f1" s0, s1, s2], ["f2", s0..], ..]], ...
+        # ]
         remotefiles = []
-        # [("dir1", [["file1", mode, size, ..], ["file2", ...]), (..), ...]
-        # listing: list[tuple[str, list[tuple[str, tuple[int, int, int]]]]]
         opts = f"{'R' in opts},{'l' in opts}"
         listing = self.eval_json(f'_helper.ls_dirs({list(dir_list)},{opts})')
         listing.sort(key=lambda d: d[0])  # Sort by directory pathname
@@ -177,7 +181,7 @@ class Board:
             # sort each directory listing by filename
             file_list.sort(key=lambda f: f[0])
         remotefiles = (  # Convert to lists of RemotePath objects
-            (dir, (RemotePath(f[0]).set_modes(f[1]) for f in filelist))
+            (dir, (RemotePath(f[0]).set_modes(f[1:]) for f in filelist))
             for dir, filelist in listing)
         return remotefiles
 
@@ -191,9 +195,9 @@ class Board:
             opts:       str
             ) -> Iterable[tuple[str, Iterable[RemotePath]]]:
         "Return a list of files on the board."
-        filenames = [filenames] if isinstance(filenames, str) else list(filenames)
+        filenames = list(filenames)
         filenames.sort
-        filelist = list(self.ls_files(filenames))
+        filelist = list(self.ls_files(filenames))  # We parse this several times
         missing = (f for f in filelist if not f.exists())
         files = (f for f in filelist if f.is_file())
         dirs = ((d.slashify() for d in filelist if d.is_dir())
@@ -359,11 +363,10 @@ class Board:
         verbose = 'v' in opts
         dry_run = 'n' in opts
         recursive = 'r' in opts
-        if isinstance(filenames, str):
-            filenames = [filenames]
         filenames = list(filenames)
         if len(filenames) == 1 and not dest.is_dir():
-            self.get_file(filenames[0], str(dest), verbose, dry_run)
+            for f in filenames:
+                self.get_file(f, str(dest), verbose, dry_run)
             return
         if not dest.is_dir():
             print('get: Destination directory does not exist:', dest)
@@ -432,13 +435,12 @@ class Board:
         verbose = 'v' in opts
         dry_run = 'n' in opts
         recursive = 'r' in opts
-        if isinstance(filenames, str):
-            filenames = [filenames]
         filenames = list(filenames)
         with self.raw_repl():
             dest = list(self.ls_files([str(dest)]))[0]
             if len(filenames) == 1 and not dest.is_dir():
-                self.put_file(filenames[0], dest, verbose, dry_run)
+                for f in filenames:
+                    self.put_file(f, dest, verbose, dry_run)
                 return
             if not dest.is_dir():
                 print('get: Destination directory does not exist:', dest)

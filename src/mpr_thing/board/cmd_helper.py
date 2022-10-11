@@ -22,25 +22,30 @@ class _MagicHelper:
             return []
 
     def ls_files(self, files):
-        print([[f, self.stat(f)] for f in files])
+        # [["f1", s0, s1, s2, s3], ["f2", s0, s1, s2], ...]
+        print([[f] + self.stat(f) for f in files if f])
 
     def ls_dirs(self, dirs, R, l):
         print("[", end="")
-        dsep = ""
+        sep = ""
         # If recursive, subdirs will be added to end of "dirs" as we go.
         while dirs:
             d = dirs.pop()
-            print('{}["{}", ['.format(dsep, d), end="")
-            sep = ""
-            for f in uos.ilistdir(d):  # type: ignore
-                p = d + f[0]
-                if R and f[1] & IS_DIR:
+            # [
+            #  ["dir",  [["f1" s0, s1, s2], ["f2", s0..], ..]],
+            #  ["dir2", [["f1" s0, s1, s2], ["f2", s0..], ..]], ...
+            # ]
+            print('{}["{}", ['.format(sep, d), end="")
+            fmt = "{}"
+            for f, m, *_ in uos.ilistdir(d):  # type: ignore
+                p = d + f
+                if R and m & IS_DIR:
                     dirs.append(p + "/")  # Add dir to list for processing
-                s = self.stat(p) if l else [f[1]]
-                print('{}["{}", {}]'.format(sep, f[0], s), end="")
-                sep = ","
+                s = [f] + self.stat(p) if l else [f, m]
+                print(fmt.format(s), end="")
+                fmt = ",{}"
             print(']]')
-            dsep = ","
+            sep = ","
         print("]")
 
     # Using a fixed buffer reduces heap allocation
