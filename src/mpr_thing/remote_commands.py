@@ -169,6 +169,20 @@ class RemoteCmd(BaseCommands):
             return
         self.board.put(args, dest, opts + 'rv')
 
+    def do_sync(self, args: Argslist) -> None:
+        """
+        Sync a local folder to a folder on the board:
+            %sync folder :dest
+        """
+        opts = ''
+        if args and args[0][0] == "-":
+            opts, *args = args
+        if len(args) != 2:
+            print("%sync: takes two arguments:")
+            return
+        src, dest = args
+        self.board.sync(src, dest, opts)
+
     # Directory commands
     def do_cd(self, args: Argslist) -> None:
         """

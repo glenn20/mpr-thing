@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os, re
 from pathlib import Path
+import stat
 import json
 import itertools
 from typing import Any, Sequence, Iterable, Callable, Optional
@@ -31,6 +32,26 @@ CODE_COMPRESS_RULES: list[tuple[bytes, bytes, dict[str, int]]] = [
 ]
 
 DEBUG_EXEC = 1
+
+
+class RemoteFolder:
+    def __init__(
+            self,
+            ls:  Iterable[tuple[str, Iterable[RemotePath]]],
+            ) -> None:
+        self.ls = {
+            d.rstrip("/") if d != "/" else d: (
+                RemotePath(d).set_modes([stat.S_IFDIR]),
+                {f.as_posix() for f in files if f.is_dir()},
+                {f.as_posix() for f in files if f.is_file()})
+            for d, files in ((str(di), list(files)) for di, files in ls)}
+
+    def files(
+            self,
+            f: PathLike
+            ) -> tuple[RemotePath, set[str], set[str]]:
+        x = self.ls.get(str(f), None)
+        return x or (RemotePath(str(f)), set(), set())
 
 
 # A collection of helper functions for file listings and filename completion
@@ -365,7 +386,7 @@ class Board:
         recursive = 'r' in opts
         filenames = list(filenames)
         if len(filenames) == 1 and not dest.is_dir():
-            for f in filenames:
+            for f in filenames:  # TODO: What if f is a directory???
                 self.get_file(f, str(dest), verbose, dry_run)
             return
         if not dest.is_dir():
@@ -456,6 +477,35 @@ class Board:
                     print(
                         f'put: skipping "{str(file)}", '
                         f'use "-r" to copy directories.')
+
+    def sync(
+            self,
+            srcname:    PathLike,
+            destname:   str,
+            opts:       str = ''
+            ) -> None:
+        "Sync local folder to a folder on the board."
+        verbose = 'v' in opts
+        dry_run = 'n' in opts
+        with self.raw_repl():
+            remote = RemoteFolder(self.ls([destname], "-R"))
+            dest, _, _ = remote.files(destname)
+            src = Path(srcname)
+            localbase = src.parent
+            for localdir, localfiles in ((Path(d), f) for d, _, f in os.walk(src)):
+                # Dest subdir is dest + relative path of local from localbase
+                destdir = dest / localdir.relative_to(localbase)
+                remotedir, _, remotefiles = remote.files(destdir)
+                if not remotedir.exists():
+                    if verbose:
+                        print(remotedir.as_posix() + "/")
+                    if not dry_run:
+                        self.mkdir(remotedir.as_posix())
+                for f in (f for f in localfiles if f not in remotefiles):
+                    self.put_file(
+                        localdir / f,
+                        remotedir / f,
+                        verbose, dry_run)
 
     def df(
             self,
