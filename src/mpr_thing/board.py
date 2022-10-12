@@ -42,16 +42,16 @@ class RemoteFolder:
         self.ls = {
             d.rstrip("/") if d != "/" else d: (
                 RemotePath(d).set_modes([stat.S_IFDIR]),
-                {f.as_posix() for f in files if f.is_dir()},
-                {f.as_posix() for f in files if f.is_file()})
+                {f.as_posix(): f for f in files if f.is_dir()},
+                {f.as_posix(): f for f in files if f.is_file()})
             for d, files in ((str(di), list(files)) for di, files in ls)}
 
     def files(
             self,
             f: PathLike
-            ) -> tuple[RemotePath, set[str], set[str]]:
+            ) -> tuple[RemotePath, dict[str, RemotePath], dict[str, RemotePath]]:
         x = self.ls.get(str(f), None)
-        return x or (RemotePath(str(f)), set(), set())
+        return x or (RemotePath(str(f)), {}, {})
 
 
 # A collection of helper functions for file listings and filename completion
@@ -487,8 +487,9 @@ class Board:
         "Sync local folder to a folder on the board."
         verbose = 'v' in opts
         dry_run = 'n' in opts
+        use_times = 't' in opts
         with self.raw_repl():
-            remote = RemoteFolder(self.ls([destname], "-R"))
+            remote = RemoteFolder(self.ls([destname], "-lR"))
             dest, _, _ = remote.files(destname)
             src = Path(srcname)
             localbase = src.parent
@@ -501,11 +502,13 @@ class Board:
                         print(remotedir.as_posix() + "/")
                     if not dry_run:
                         self.mkdir(remotedir.as_posix())
-                for f in (f for f in localfiles if f not in remotefiles):
-                    self.put_file(
-                        localdir / f,
-                        remotedir / f,
-                        verbose, dry_run)
+                for f in localfiles:
+                    f1 = localdir / f
+                    f2 = remotefiles.get(f, None)
+                    if f2 and f1.stat()[6] == f2.size:
+                        # and f1.stat()[8] > f2.mtime)
+                        break
+                    self.put_file(f1, remotedir / f, verbose, dry_run)
 
     def df(
             self,
