@@ -34,8 +34,8 @@ class RemotePath(PurePosixPath):
             RemotePath: [description]
         """
         self.mode    = stat[0] if stat else 0
-        self.size    = stat[1] if stat[1:] else 0
-        self.mtime   = stat[2] if stat[2:] else 0
+        self.size    = stat[1] if stat[1:] else -1
+        self.mtime   = stat[2] if stat[2:] else -1
         self._exists = bool(stat)
         return self  # So we can f = RemotePath('/main.py').set_modes(...)
 
