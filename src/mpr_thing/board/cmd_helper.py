@@ -26,15 +26,15 @@ class _MagicHelper:
         print([[f] + self.stat(f) for f in files if f])
 
     def ls_dirs(self, dirs, R, l):
+        # [["dir",  [["f1" s0, s1, s2], ["f2", s0..], ..]],
+        #  ["dir2", [["f1" s0, s1, s2], ["f2", s0..], ..]], ...]
         print("[", end="")
         sep = ""
         # If recursive, subdirs will be added to end of "dirs" as we go.
         while dirs:
             d = dirs.pop()
-            # [
-            #  ["dir",  [["f1" s0, s1, s2], ["f2", s0..], ..]],
-            #  ["dir2", [["f1" s0, s1, s2], ["f2", s0..], ..]], ...
-            # ]
+            if not self.stat(d):
+                break
             print('{}["{}", ['.format(sep, d), end="")
             fmt = "{}"
             for f, m, *_ in uos.ilistdir(d):  # type: ignore
