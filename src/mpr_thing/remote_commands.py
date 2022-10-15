@@ -25,6 +25,17 @@ class RemoteCmd(BaseCommands):
     def __init__(self, board: Board):
         super().__init__(board)
 
+    @staticmethod
+    def _options(args: Argslist) -> tuple[str, Argslist]:
+        "Extract options from args list and return (\"-opts\", args)."
+        opts, new_args = "", []
+        for arg in args:
+            if arg.startswith("-"):
+                opts += arg
+            else:
+                new_args.append(arg)
+        return (opts, new_args)
+
     # File commands
     def do_fs(self, args: Argslist) -> None:
         """
@@ -52,9 +63,7 @@ class RemoteCmd(BaseCommands):
             %ls [-[lR]] [file_or_dir1 ...]
         The file listing will be colourised the same as "ls --color". Use the
         "set" command to add or change the file listing colours."""
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
+        opts, args = self._options(args)
         filelist = list(self.board.ls(args, opts))
         linebreak = ''
         first_time = True
@@ -100,9 +109,7 @@ class RemoteCmd(BaseCommands):
         Rename/move a file or directory on the board:
             %mv old new
             %mv *.py /app"""
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
+        opts, args = self._options(args)
         dest = args.pop()
         self.board.mv(args, dest, opts)
 
@@ -111,9 +118,7 @@ class RemoteCmd(BaseCommands):
         Make a copy of a file or directory on the board, eg:
             %cp [-r] existing new
             %cp *.py /app"""
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
+        opts, args = self._options(args)
         dest = args.pop()
         self.board.cp(args, dest, opts)
 
@@ -121,9 +126,7 @@ class RemoteCmd(BaseCommands):
         """
         Delete files from the board:
             %rm [-r] file1 [file2 ...]"""
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
+        opts, args = self._options(args)
         self.board.rm(args, opts)
 
     def is_remote(self, filename: str, pwd: str) -> bool:
@@ -138,9 +141,7 @@ class RemoteCmd(BaseCommands):
             %get [-n] file1 [file2 ...] [:dest]
         If the last argument start with ":" use that as the destination folder.
         """
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
+        opts, args = self._options(args)
         self.load_board_params()
         pwd: str = self.params['pwd']
         files: list[str] = []
@@ -158,9 +159,7 @@ class RemoteCmd(BaseCommands):
             %put file [file2 ...] [:dest]
         If the last argument start with ":" use that as the destination folder.
         """
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
+        opts, args = self._options(args)
         self.load_board_params()
         pwd: str = self.params['pwd']
         dest = args.pop()[1:] if args[-1].startswith(':') else pwd
@@ -174,9 +173,7 @@ class RemoteCmd(BaseCommands):
         Sync a local folder to a folder on the board:
             %sync folder :dest
         """
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
+        opts, args = self._options(args)
         if len(args) != 2:
             print("%sync: takes two arguments:")
             return
@@ -267,7 +264,7 @@ class RemoteCmd(BaseCommands):
         where parameters are the same as for "set prompt=" (See "help set").
         Hit the TAB key after typing '{' to see all the available parameters.
         """
-        opts, *args = args if args and args[0].startswith("-") else ('', *args)
+        opts, args = self._options(args)
         print(
             ' '.join(args).format_map(self.params),
             end='' if 'n' in opts else '\n')
@@ -318,9 +315,7 @@ class RemoteCmd(BaseCommands):
         FileSystem:
             %mount [folder]   # If no folder specified use '.'"""
         # Don't use relative paths - these can change if we "!cd .."
-        opts = ''
-        if args and args[0][0] == "-":
-            opts, *args = args
+        opts, args = self._options(args)
         path = args[0] if args else '.'
         self.board.mount(path, opts)
         print(f'Mounted local folder {args} on /remote')
