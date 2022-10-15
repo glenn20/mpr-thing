@@ -310,7 +310,7 @@ class RemoteCmd(BaseCommands):
         from time import asctime
         t = self.board.get_localtime()
         print(asctime(
-            (t[0], t[1], t[2], t[3], t[4], t[5], 0, 0, 0)))
+            (t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], 0)))
 
     def do_mount(self, args: Argslist) -> None:
         """
