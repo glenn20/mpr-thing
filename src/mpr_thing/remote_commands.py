@@ -146,7 +146,7 @@ class RemoteCmd(BaseCommands):
         pwd: str = self.params['pwd']
         files: list[str] = []
         for f in args:
-            if self.is_remote(f, pwd):
+            if not f.startswith(":") and self.is_remote(f, pwd):
                 print("get: skipping files in /remote mounted folder:", f)
             else:
                 files.append(f)
