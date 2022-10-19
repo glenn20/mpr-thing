@@ -17,6 +17,12 @@ from mpremote.pyboardextended import PyboardExtended
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
+nested_depth = 0
+
+
+class CatcherException(Exception):
+    pass
+
 
 # A context manager to catch exceptions from pyboard and others
 @contextmanager
@@ -26,18 +32,24 @@ def catcher() -> Generator[None, None, None]:
         from catcher import catcher
         with catcher():
             id = board.eval("print(unique_id())")"""
+    global nested_depth
+
     try:
+        nested_depth += 1
         yield
 
     except KeyboardInterrupt:
         print("Keyboard Interrupt.")
-        raise    # Re-raise the exception
+        if nested_depth > 1:
+            raise    # Unwind to the outermost catcher
     except (OSError, FileNotFoundError) as exc:
         print(f"{exc.__class__.__name__}: {exc}")
     except Exception as exc:
         print("Error:: ", end="")
         print(f"{exc.args}")
         print_exc()
+    finally:
+        nested_depth -= 1
 
 
 # A context manager for the raw_repl - not re-entrant
