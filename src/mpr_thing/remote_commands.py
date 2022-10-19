@@ -174,11 +174,14 @@ class RemoteCmd(BaseCommands):
             %sync folder :dest
         """
         opts, args = self._options(args)
-        if len(args) != 2:
-            print("%sync: takes two arguments:")
+        self.load_board_params()
+        pwd: str = self.params['pwd']
+        dest = args.pop()[1:] if args[-1].startswith(':') else pwd
+        if self.is_remote(dest, pwd):
+            print("%put: do not sync files into /remote mounted folder:", pwd)
             return
-        src, dest = args
-        self.board.sync(src, dest, opts)
+        for arg in args:
+            self.board.sync(arg, dest, opts)
 
     # Directory commands
     def do_cd(self, args: Argslist) -> None:
@@ -336,7 +339,7 @@ class RemoteCmd(BaseCommands):
             %free"""
         verbose = '1' if args and args[0] == '-v' else ''
         self.board.exec(
-            f'from micropython import mem_info; mem_info({verbose})')
+            f'from micropython import mem_info; print(mem_info({verbose}))')
 
     def do_df(self, args: Argslist) -> None:
         """

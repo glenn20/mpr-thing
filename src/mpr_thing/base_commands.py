@@ -11,6 +11,7 @@ from __future__ import annotations
 import os, re, readline, time, cmd, shutil
 from pathlib import Path
 import json, inspect, shlex, glob, fnmatch, itertools
+from traceback import print_exc
 from typing import Any, Iterable
 
 from .catcher import catcher
@@ -682,6 +683,8 @@ class BaseCommands(cmd.Cmd):
                 print()
             except Exception as err:
                 print("Error in command:", err)
+                print(f"{err.args}")
+                print_exc()
                 # raise
                 stop = not self.multi_cmd_mode
         self.shell_mode = False
