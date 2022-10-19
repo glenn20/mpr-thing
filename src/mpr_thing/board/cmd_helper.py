@@ -89,8 +89,7 @@ class _MagicHelper:
         print([w for w in (dir(base) if base else dir()) if w.startswith(word)])
 
     def pr(self):   # Return some dynamic values for the command prompt
-        print('[\"{}\",{},{}]'.format(
-            uos.getcwd(), gc.mem_alloc(), gc.mem_free()))  # type: ignore
+        print([uos.getcwd(), gc.mem_alloc(), gc.mem_free()])  # type: ignore
 
 
 _helper = _MagicHelper()
