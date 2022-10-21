@@ -160,28 +160,30 @@ class RemoteCmd(BaseCommands):
         If the last argument start with ":" use that as the destination folder.
         """
         opts, args = self._options(args)
+        if not args:
+            print("%put: Must provide at least one file or directory to copy.")
         self.load_board_params()
         pwd: str = self.params['pwd']
         dest = args.pop()[1:] if args[-1].startswith(':') else pwd
         if self.is_remote(dest, pwd):
-            print("%put: do not put files into /remote mounted folder:", pwd)
+            print(f"%put: do not put files into /remote mounted folder: {pwd}")
             return
         self.board.put(args, dest, opts + 'rv')
 
-    def do_sync(self, args: Argslist) -> None:
+    def do_rsync(self, args: Argslist) -> None:
         """
         Sync a local folder to a folder on the board:
-            %sync folder :dest
+            %sync file, folder, ... :dest
         """
         opts, args = self._options(args)
         self.load_board_params()
         pwd: str = self.params['pwd']
         dest = args.pop()[1:] if args[-1].startswith(':') else pwd
         if self.is_remote(dest, pwd):
-            print("%put: do not sync files into /remote mounted folder:", pwd)
+            print(f"%put: do not sync files into /remote mounted folder: {pwd}")
             return
         for arg in args:
-            self.board.sync(arg, dest, opts)
+            self.board.rsync(arg, dest, opts)
 
     # Directory commands
     def do_cd(self, args: Argslist) -> None:
