@@ -69,6 +69,7 @@ class BaseCommands(cmd.Cmd):
         self.params: dict[str, Any] = {}    # Params we can use in prompt
         self.names:  dict[str, str] = {}    # Map device unique_ids to names
         self.lsspec: dict[str, str] = {}    # Extra colour specs for %ls
+        self.initialised: bool = False
         readline.set_completer_delims(' \t\n>;')
 
         # Cmd.cmdloop() overrides completion settings in ~/.inputrc
@@ -103,26 +104,18 @@ class BaseCommands(cmd.Cmd):
             return True
         return False
 
-    def load_options_file(self) -> None:
-        if not hasattr(self, 'options_loaded') or not self.options_loaded:
-            self.load_command_file(OPTIONS_FILE)
-            self.options_loaded = True
-
-    def load_rc_file(self) -> None:
-        if not hasattr(self, 'rcfile_loaded') or not self.rcfile_loaded:
-            self.load_command_file(RC_FILE)
-            self.rcfile_loaded = True
-
-    # Load board hook code and params for the prompt
-    def load_hooks(self) -> None:
-        'Load/reload the helper code onto the micropython board.'
-        if not hasattr(self, 'hooks_loaded') or not self.hooks_loaded:
-            self.board.load_helper()
-            self.board.exec(f'_helper.localtime_offset = {-time.timezone}')
-            self.hooks_loaded = True
+    def initialise(self) -> None:
+        if self.initialised:
+            return
+        self.initialised = True
+        self.load_command_file(OPTIONS_FILE)
+        self.load_command_file(RC_FILE)
+        # Load/reload the helper code onto the micropython board.
+        self.board.load_helper()
 
     def reset_hooks(self) -> None:
-        self.hooks_loaded = False
+        if self.initialised:
+            self.board.load_helper()
 
     def load_board_params(self) -> None:
         'Initialise the board parameters - used in the longform prompt'
@@ -154,10 +147,15 @@ class BaseCommands(cmd.Cmd):
 
     def set_prompt(self) -> None:
         "Set the prompt using the prompt_fmt string."
+        if not self.multi_cmd_mode:
+            self.prompt = (
+                self.colour(self.prompt_colour, self.base_prompt) +
+                ((self.colour.ansi(self.command_colour) + "%")
+                 if not self.shell_mode else
+                 (self.colour.ansi(self.shell_colour) + "!")))
+            return
         self.load_board_params()
-        pwd, alloc, free = '', 0, 0
-        with catcher():
-            pwd, alloc, free = self.board.eval_json('_helper.pr()')
+        pwd, alloc, free = self.board.eval_json('_helper.pr()')
 
         free_pc = round(100 * free / (alloc + free)) if alloc > 0 else 0
         free_delta = max(0, self.params.get('free', free) - free)
@@ -207,8 +205,6 @@ class BaseCommands(cmd.Cmd):
         if 'l' in opts:
             # Long listing style - data is a list of filenames
             for f in files:
-                if f.mtime < 40 * 31536000:  # ie. before 2010
-                    f.mtime += 946684800   # Correct for epoch=2000 on uPython
                 size = f.size if not f.is_dir() else 0
                 t = time.strftime(
                     '%c',
@@ -262,7 +258,6 @@ class BaseCommands(cmd.Cmd):
                     new_args.append(arg)
 
             os.system(' '.join(new_args))   # TODO: Use interactive shell
-
             # for arg, dest in names:
             #     remote.board.put(str(dest), arg)
 
@@ -311,6 +306,7 @@ class BaseCommands(cmd.Cmd):
             print(f'set name="{self.names[self.params["unique_id"]]}"')
             print(f'set names=\'{json.dumps(self.names)}\'')
             print(f'set lscolour=\'{json.dumps(self.lsspec)}\'')
+            print(f'set debug="{self.board.debug}"')
             return
 
         for arg in args:
@@ -322,15 +318,18 @@ class BaseCommands(cmd.Cmd):
                 print("%set: invalid option setting:", arg)
                 continue
             if key == 'prompt':
-                saved = self.prompt_fmt
+                saved_fmt = self.prompt_fmt
+                saved_multi_cmd_mode = self.multi_cmd_mode
                 try:
                     self.prompt_fmt = value
-                    backup = self.prompt
+                    self.multi_cmd_mode = True
                     self.set_prompt()   # Check for errors in the prompt
-                    self.prompt = backup
                 except KeyError as err:   # Restore the old prompt_fmt
                     print('%set prompt: Invalid key in prompt:', err)
-                    self.prompt_fmt = saved
+                    self.prompt_fmt = saved_fmt
+                finally:
+                    self.multi_cmd_mode = saved_multi_cmd_mode
+                    self.set_prompt()   # Restore the right prompt
             elif key in ['promptcolour', 'promptcolor']:
                 ansi = self.colour.ansi(value)
                 if ansi[0] == '\x1b':
@@ -374,14 +373,14 @@ class BaseCommands(cmd.Cmd):
                     self.lsspec[k.lstrip('*')] = v
                 self.colour.spec.update(self.lsspec)
             elif key == 'debug':
-                self.board.debug = int(value)
+                self.board.debug = int(value)  # type: ignore
             else:
                 print("%set: unknown key:", key)
         self.save_options()
 
     def save_options(self) -> None:
         'Save the options in a startup file.'
-        if not hasattr(self, 'options_loaded') or not self.options_loaded:
+        if not self.initialised:
             return  # Don't save if we are reading from the options file
         with open(OPTIONS_FILE if os.path.isfile(OPTIONS_FILE) else
                   os.path.expanduser('~/' + OPTIONS_FILE), 'w') as f:
@@ -486,47 +485,62 @@ class BaseCommands(cmd.Cmd):
             return
         func()
 
+    def complete_local(self, pre: str, post: str) -> Argslist:
+        # Complete names starting with ":" as remote files.
+        if pre[:1] == ":" or not pre and post[:1] == ":":
+            pre, post = pre.lstrip(":"), post.lstrip(":")
+            return [f":{f}" for f in self.complete_remote(pre, post)]
+        # Execute filename completion on local host
+        try:
+            _, dirs, files = next(os.walk(os.path.expanduser(pre) or '.'))
+            files = [pre + f for f in files if f.startswith(post)]
+            files.extend(pre + f + '/' for f in dirs if f.startswith(post))
+            files.sort()
+        except OSError as err:
+            print(OSError, err)
+            return []
+        return files
+
+    def complete_remote(self, pre: str, post: str) -> Argslist:
+        # Complete names starting with ":" as local files.
+        if pre[:1] == ":" or not pre and post[:1] == ":":
+            pre, post = pre.lstrip(":"), post.lstrip(":")
+            return [f":{f}" for f in self.complete_local(pre, post)]
+        # Execute filename completion on the board.
+        lsdir = self.board.ls_dir(pre or '.') or []
+        return [
+            pre + f.slashify()
+            for f in lsdir if f.name.startswith(post)]
+
+    def complete_params(self, word: str) -> Argslist:
+        # Complete on board params, eg: set prompt="{de[TAB]
+        sep = word.rfind('{')
+        pre, post = word[:sep + 1], word[sep + 1:]
+        return (
+            [pre + k for k in self.params if k.startswith(post)]
+            if sep >= 0 else [])
+
     # Command line parsing, splitting and globbing
     def completedefault(                            # type: ignore
             self, word: str, line: str, begidx: int, endidx: int) -> Argslist:
         'Perform filename completion on "word".'
-        cmd         = line.split()[0]
+        cmd         = line.split()[0].lstrip("%")
         sep         = word.rfind('/')
+        if self.shell_mode:
+            cmd = "shell"
+        # pre is the directory portion, post is the incomplete filename
         pre, post   = word[:sep + 1], word[sep + 1:]
-        if cmd in ('set', 'echo') and not self.shell_mode:
+        if cmd in ('set', 'echo'):
             # Complete on board params, eg: set prompt="{de[TAB]
-            sep = word.rfind('{')
-            pre, post = word[:sep + 1], word[sep + 1:]
-            return (
-                [pre + k for k in self.params if k.startswith(post)]
-                if sep >= 0 else [])
-        elif cmd in self.noglob_cmds and not self.shell_mode:
+            return self.complete_params(word)
+        elif cmd in self.noglob_cmds:
             # No filename completion for this command
             return []
-        elif cmd in self.remote_cmds and not self.shell_mode:
+        elif cmd in self.remote_cmds:
             # Execute filename completion on the board.
-            lsdir = self.board.ls_dir(pre or '.') or []
-            files = [
-                pre + str(f) + ('/' if f.is_dir() else '')
-                for f in lsdir if f.name.startswith(post)]
+            files = self.complete_remote(pre, post)
         else:
-            # Complete names starting with ":" as remote files.
-            if word and word[0] == ":":
-                pre, post = pre.lstrip(":"), post.lstrip(":")
-                lsdir = self.board.ls_dir(pre or '.') or []
-                files = [
-                    ":" + pre + str(f) + ('/' if f.is_dir() else '')
-                    for f in lsdir if f.name.startswith(post)]
-            else:
-                # Execute filename completion on local host
-                try:
-                    _, dirs, files = next(os.walk(pre or '.'))
-                    files = [pre + f for f in files if f.startswith(post)]
-                    files.extend(pre + f + '/' for f in dirs if f.startswith(post))
-                    files.sort()
-                except OSError as err:
-                    print(OSError, err)
-                    return []
+            files = self.complete_local(pre, post)
 
         # Return all filenames or only directories if requested
         return (
@@ -536,7 +550,7 @@ class BaseCommands(cmd.Cmd):
     def glob_remote(self, word: str) -> Iterable[str]:
         'Expand glob patterns in the filename part of "path".'
         if '*' not in word and '?' not in word:
-            return (f for f in [])  # type: ignore
+            return []
         sep = word.rfind('/')
         dir, word = word[:sep + 1] or '.', word[sep + 1:]
         files = self.board.ls_dir(dir) or []
@@ -545,20 +559,22 @@ class BaseCommands(cmd.Cmd):
             for f in files
             if str(f)[0] != '.' and fnmatch.fnmatch(str(f), word))
 
-    def glob(self, args: Argslist) -> Iterable[str]:
-        remote_glob = args[0] in self.remote_cmds
-        no_glob = args[0] in self.noglob_cmds
+    def glob_local(self, word: str) -> Iterable[str]:
+        'Expand glob patterns in the filename part of "path".'
+        return glob.iglob(os.path.expanduser(word))
+
+    def expand_globs(self, args: Argslist) -> Iterable[str]:
+        if args[0] in self.noglob_cmds:
+            yield from args
+            return
+        globber = (
+            self.glob_remote if args[0] in self.remote_cmds else
+            self.glob_local)
         yield args[0]
         for arg in args[1:]:
             if arg:
-                at_least_one = False
-                if not no_glob:
-                    for f in (self.glob_remote(arg) if remote_glob else
-                              glob.iglob(arg)):
-                        at_least_one = True
-                        yield f
-                if not at_least_one:
-                    yield arg   # if no match - just return the glob pattern
+                for f in list(globber(arg)) or [arg]:
+                    yield f
 
     def split(self, line: str) -> Argslist:
         'Split the command line into tokens.'
@@ -567,7 +583,7 @@ class BaseCommands(cmd.Cmd):
         lex.wordchars += ':'
         return list(lex)
 
-    def expand_alias(self, args: Argslist) -> Argslist:
+    def expand_aliases(self, args: Argslist) -> Argslist:
         if not args or args[0] not in self.alias:
             return args
 
@@ -594,37 +610,28 @@ class BaseCommands(cmd.Cmd):
         # eg: ls /lib ; rm /main.py
         def split_semicolons(args: Argslist) -> Argslist:
             # Split argslist by semicolons
-            if ';' not in args:
+            if not args or ';' not in args:
                 return args
             argslist = (  # [[arg1, ...], [arg1,...], ...]
                 list(l) for key, l in
                 itertools.groupby(args, lambda arg: arg == ';') if not key)
             # Get args for the first subcommand
-            args = next(argslist) if args and args[0] != ';' else []
+            args = next(argslist) if args[0] != ';' else []
             # Push the rest of the args back onto the cmd queue
             self.cmdqueue[0:0] = list(argslist)  # type: ignore
             return args
 
         args = split_semicolons(args)
-        args = self.expand_alias(args)
+        args = self.expand_aliases(args)
         args = split_semicolons(args)   # Alias may expand to include ';'
-        args = list(self.glob(args))    # Expand glob patterns
+        args = list(self.expand_globs(args))    # Expand glob patterns
 
         return args
 
     # Override some control functions in the Cmd class
+    # Ensure everything has been initialised.
     def preloop(self) -> None:
-        self.options_loaded: bool
-        self.rcfile_loaded:  bool
-        self.load_hooks()     # Load the helper code onto the board
-        self.load_options_file()
-        self.load_rc_file()
-        if not self.multi_cmd_mode:
-            self.prompt = (
-                self.colour(self.prompt_colour, self.base_prompt) +
-                ((self.colour.ansi(self.command_colour) + "%")
-                 if not self.shell_mode else
-                 (self.colour.ansi(self.shell_colour) + "!")))
+        self.set_prompt()
 
     def postloop(self) -> None:
         print(self.base_prompt, end='')  # Re-print the micropython prompt
@@ -665,14 +672,14 @@ class BaseCommands(cmd.Cmd):
         return ret
 
     def postcmd(self, stop: Any, line: str) -> bool:
-        if self.multi_cmd_mode:
-            self.set_prompt()       # Setup our complicated prompt
+        self.set_prompt()       # Setup our complicated prompt
         # Exit if we are in single command mode and no commands in the queue
         return not self.multi_cmd_mode and not self.cmdqueue
 
     def run(self, prefix: bytes = b"%") -> None:
         'Catch exceptions and restart the Cmd.cmdloop().'
         stop = False
+        self.initialise()     # Load the helper code onto the board
         self.shell_mode = (prefix == b"!")
         while not stop:
             stop = True
@@ -681,11 +688,17 @@ class BaseCommands(cmd.Cmd):
             except KeyboardInterrupt:
                 stop = not self.multi_cmd_mode
                 print()
+                if not self.multi_cmd_mode:
+                    print(f"{self.colour.ansi('reset')}", end="")
+                    print(self.base_prompt, end='', flush=True)  # Re-print the micropython prompt
             except Exception as err:
                 print("Error in command:", err)
                 print(f"{err.args}")
                 print_exc()
                 # raise
+                if not self.multi_cmd_mode:
+                    print(f"{self.colour.ansi('reset')}", end="")
+                    print(self.base_prompt, end='', flush=True)  # Re-print the micropython prompt
                 stop = not self.multi_cmd_mode
         self.shell_mode = False
 
