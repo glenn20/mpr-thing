@@ -13,6 +13,7 @@ import stat
 import json
 import itertools
 import time
+from enum import IntFlag
 from typing import Any, Sequence, Iterable, Callable, Optional
 
 from mpremote.pyboardextended import PyboardExtended
@@ -33,7 +34,11 @@ CODE_COMPRESS_RULES: list[tuple[bytes, bytes, dict[str, int]]] = [
     (br"  *([=+-])  *",  br"\1",  {}),
 ]
 
-DEBUG_EXEC = 1
+
+class Debug(IntFlag):
+    NONE = 0
+    EXEC = 1
+    FILES = 2
 
 
 class RemoteFolder:
@@ -44,16 +49,15 @@ class RemoteFolder:
         self.ls = {
             d.rstrip("/") if d != "/" else d: (
                 RemotePath(d).set_modes([stat.S_IFDIR]),
-                {f.as_posix(): f for f in files if f.is_dir()},
-                {f.as_posix(): f for f in files if f.is_file()})
+                {f.as_posix(): f for f in files})
             for d, files in ((str(di), list(files)) for di, files in ls)}
 
     def files(
             self,
             f: PathLike
-            ) -> tuple[RemotePath, dict[str, RemotePath], dict[str, RemotePath]]:
+            ) -> tuple[RemotePath, dict[str, RemotePath]]:
         x = self.ls.get(str(f), None)
-        return x or (RemotePath(str(f)), {}, {})
+        return x or (RemotePath(str(f)), {})
 
 
 # A collection of helper functions for file listings and filename completion
@@ -74,8 +78,8 @@ class Board:
         self.pyb = pyb
         self.writer = writer
         self.default_depth = 40   # Max recursion depth for cp(), rm()
-        self.debug: int = 0
-        self.board_has_utime: bool = False
+        self.debug: Debug = Debug.NONE
+        self.board_has_utime: bool = False  # See PR#9644
 
     def load_helper(self) -> None:
         'Load the __helper class and methods onto the micropython board.'
@@ -117,11 +121,11 @@ class Board:
             ) -> str:
         'Execute some code on the micropython board.'
         response: str = ""
-        if self.debug & DEBUG_EXEC:
+        if self.debug & Debug.EXEC:
             print(f"Board.exec(): code = {code}")
         with self.raw_repl(code):
             response = self.pyb.exec_(code, self.writer if not silent else None).decode().strip()
-        if self.debug & DEBUG_EXEC:
+        if self.debug & Debug.EXEC:
             print(f"Board.exec(): resp = {response}")
         return response
 
@@ -418,40 +422,53 @@ class Board:
                 elif not file.exists():
                     print(f'{str(file)}: No such file.')
 
+    def check_remote_is_up_to_date(
+            self, local: Path, remote: RemotePath, opts: str) -> int:
+        "If local is newer than remote, return mtime of local, else -1"
+        s = local.stat()
+        size, mtime = s[6], round(s[8])
+        if self.debug & Debug.FILES:
+            print(f"local: {str(local)} {size} {mtime}")
+            print(f"remote: {remote.as_posix()} {remote.size} {remote.mtime}")
+        if ('s' in opts and remote.exists() and
+                ((mtime == remote.mtime and (local.is_dir() or size == remote.size)) or
+                    ('u' in opts and (mtime < remote.mtime)))):
+            # Skip if same size and same time or newer on board
+            return -1
+        return mtime
+
     def put_file(
             self,
             filename:   Path,
             dest:       RemotePath,
-            verbose:    bool = False,
-            dry_run:    bool = False,
-            preserve_times: bool = True
+            opts:       str = ""
             ) -> None:
         'Copy a local file "filename" to the "dest" folder on the board.'
-        with self.raw_repl():
-            if filename.is_dir():
-                if dest.is_file():
-                    raise OSError(f"Can not copy local dir to remote file {dest.as_posix()}")
-                if not dest.exists():
-                    if verbose: print(str(dest) + "/")
-                    self.mkdir(str(dest))
-            else:
-                if dest.is_dir():
-                    raise OSError(f"Can not copy local file to remote dir {dest.as_posix()}")
-                if verbose: print(str(dest))
-                if not dry_run:
-                    self.pyb.fs_put(str(filename), str(dest))
-            if preserve_times and self.board_has_utime and not dry_run:
-                mtime = round(os.stat(str(filename))[8])
-                if not dest.exists() or (mtime != dest.mtime):
-                    self.exec(f"uos.utime({str(dest)!r},(0,{mtime - RemotePath.epoch_offset}))")
+        if filename.is_dir() and dest.is_file():
+            raise OSError(f"Can not copy local dir to remote file {dest.as_posix()}")
+        elif filename.is_file() and dest.is_dir():
+            raise OSError(f"Can not copy local file to remote dir {dest.as_posix()}")
+
+        mtime: int = 0
+        if 't' in opts or 's' in opts or 'u' in opts:
+            mtime = self.check_remote_is_up_to_date(filename, dest, opts)
+            if mtime < 0:
+                return  # Skip if same size and same time or newer on board
+        if 'v' in opts: print(dest.slashify())
+        if 'n' in opts: return
+        if filename.is_file():
+            self.pyb.fs_put(str(filename), str(dest))
+        elif not dest.exists():
+            self.mkdir(str(dest))
+        if 't' in opts and self.board_has_utime:
+            # Requires micropython PR#9644
+            self.exec(f"uos.utime({str(dest)!r},(0,{mtime - RemotePath.epoch_offset}))")
 
     def put_dir(
             self,
             dir:        Path,
             dest:       RemotePath,
-            verbose:    bool = False,
-            dry_run:    bool = False,
-            preserve_times: bool = True
+            opts:       str = ""
             ) -> None:
         'Recursively copy a directory to the micropython board.'
         base = dir.parent
@@ -463,10 +480,10 @@ class Board:
             # Dest subdir is dest + relative path from dir to base
             destdir = dest / subdir.relative_to(base)
             d = list(self.ls_files([str(destdir)]))[0]
-            self.put_file(subdir, d, verbose, dry_run, preserve_times)
+            self.put_file(subdir, d, opts)
             for f in files:
                 f1, f2 = subdir / f, destdir / f
-                self.put_file(f1, f2, verbose, dry_run, preserve_times)
+                self.put_file(f1, f2, opts)
 
     def put(
             self,
@@ -476,16 +493,12 @@ class Board:
             ) -> None:
         "Copy local files to the current folder on the board."
         dest = Path(dest)
-        verbose = 'v' in opts
-        dry_run = 'n' in opts
-        recursive = 'r' in opts
-        preserve_times = 't' in opts
         filenames = list(filenames)
         with self.raw_repl():
             dest = list(self.ls_files([str(dest)]))[0]
             if len(filenames) == 1 and not dest.is_dir():
                 for f in filenames:
-                    self.put_file(Path(f), dest, verbose, dry_run, preserve_times)
+                    self.put_file(Path(f), dest, opts)
                 return
             if not dest.is_dir():
                 print('get: Destination directory does not exist:', dest)
@@ -494,47 +507,41 @@ class Board:
                 file = Path(filename)
                 if not file.is_dir():
                     f2 = dest / file.name
-                    self.put_file(file, f2, verbose, dry_run, preserve_times)
-                elif recursive:  # file is a directory
-                    self.put_dir(file, dest, verbose, dry_run, preserve_times)
+                    self.put_file(file, f2, opts)
+                elif 'r' in opts:  # file is a directory
+                    self.put_dir(file, dest, opts)
                 else:
                     print(
                         f'put: skipping "{str(file)}", '
                         f'use "-r" to copy directories.')
 
-    def sync(
+    def rsync(
             self,
             src:        PathLike,
             dest:       str,
             opts:       str = ''
             ) -> None:
         "Sync local folder to a folder on the board."
-        verbose = 'v' in opts
-        dry_run = 'n' in opts
-        update = 'u' in opts
-        preserve_times = 't' in opts
+        opts += 's'  # Force sync mode on
         with self.raw_repl():
-            remote = RemoteFolder(self.ls([dest], "-lR"))
-            destdir, _, _ = remote.files(dest)
             localfile = Path(src)
-            localparent = localfile.parent
-            for localsubdir, localfiles in ((Path(d), f) for d, _, f in os.walk(localfile)):
+            destpath = RemotePath(dest) / localfile.name
+            remotefile = list(self.ls_files([destpath.as_posix()]))[0]
+            self.put_file(localfile, remotefile, opts)
+            if localfile.is_file():
+                return
+            remote = RemoteFolder(self.ls([destpath.as_posix()], "-lR"))
+            destdir, _ = remote.files(destpath)
+            for localsubdir, localdirs, localfiles in ((Path(d), s, f) for d, s, f in os.walk(localfile)):
                 # Dest subdir is dest + relative path of local from localbase
-                destsubdir = destdir / localsubdir.relative_to(localparent)
-                remotedir, _, remotefiles = remote.files(destsubdir)
-                self.put_file(localsubdir, remotedir, verbose, dry_run, preserve_times)
+                localfiles.extend(localdirs)
+                destsubdir = destdir / localsubdir.relative_to(localfile)
+                remotedir, remotefiles = remote.files(destsubdir)
                 for f in localfiles:
                     f1 = localsubdir / f
                     fr = remotefiles.get(f, RemotePath(f))
                     f2 = RemotePath(str(remotedir / fr)).set_modes(fr.modes())
-                    s = f1.stat()
-                    f1_size, f1_mtime = s[6], round(s[8])
-                    if (f2.exists() and
-                            ((f1_mtime == f2.mtime and f1_size == f2.size) or
-                             (update and (f1_mtime < f2.mtime)))):
-                        # Skip if same size and same time or newer on board
-                        break
-                    self.put_file(f1, f2, verbose, dry_run, preserve_times)
+                    self.put_file(f1, f2, opts)
 
     def df(
             self,
