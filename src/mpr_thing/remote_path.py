@@ -41,17 +41,15 @@ class RemotePath(PurePosixPath):
         self._exists = bool(stat)
         return self  # So we can f = RemotePath('/main.py').set_modes(...)
 
-    def modes(self) -> list[int]:
-        return [self.mode, self.size, self.mtime - self.epoch_offset] if self._exists else []
+    def modes(self) -> tuple[int, int, int]:
+        return (self.mode, self.size, self.mtime - self.epoch_offset)
+
+    def stat(self) -> tuple[int, int, int, int, int, int, int, int, int, int]:
+        return (self.mode, 0, 0, 0, 0, 0, self.size, self.mtime, self.mtime, self.mtime)
 
     def slashify(self) -> str:
-        d = self.as_posix()
-        return d if d.endswith("/") else d + "/" if d else d
-
-    def set_exists(self, exists: bool) -> RemotePath:
-        """Set the existence state of the file."""
-        self._exists = exists
-        return self
+        name = self.as_posix()
+        return name + "/" if self.is_dir() and name != "/" else name
 
     def is_dir(self) -> bool:
         """Return True if the file is a directory."""
@@ -64,3 +62,6 @@ class RemotePath(PurePosixPath):
     def exists(self) -> bool:
         """Return True if the file exists."""
         return hasattr(self, '_exists') and self._exists
+
+    def __repr__(self):
+        return f"RemotePath({self.name!r}, {[self.mode, self.size, self.mtime]})"
