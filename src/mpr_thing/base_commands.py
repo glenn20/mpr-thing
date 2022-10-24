@@ -15,7 +15,7 @@ from traceback import print_exc
 from typing import Any, Iterable
 
 from .catcher import catcher
-from .remote_path import RemotePath
+from .mpremote_path import RemotePath
 from .board import Board
 from .colour import AnsiColour
 

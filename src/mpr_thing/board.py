@@ -19,7 +19,7 @@ from typing import Any, Sequence, Iterable, Callable, Optional
 from mpremote.pyboardextended import PyboardExtended
 
 from .catcher import raw_repl
-from .remote_path import RemotePath
+from .mpremote_path import RemotePath
 
 # Type aliases
 Writer    = Callable[[bytes], None]     # Type of the console write functions
