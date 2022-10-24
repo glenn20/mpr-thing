@@ -80,9 +80,16 @@ class Board:
         self.default_depth = 40   # Max recursion depth for cp(), rm()
         self.debug: Debug = Debug.NONE
         self.board_has_utime: bool = False  # See PR#9644
+        self.helper_loaded = False
+        # RemotePath._board = self
+
+    def reset(self) -> None:
+        self.helper_loaded = False
 
     def load_helper(self) -> None:
         'Load the __helper class and methods onto the micropython board.'
+        if self.helper_loaded:
+            return
         # The helper code is "board/cmd_helper.py" in the module directory.
         micropy_file = Path(__file__).parent / 'board' / 'cmd_helper.py'
         with open(micropy_file, 'rb') as f:
@@ -97,10 +104,11 @@ class Board:
         RemotePath.epoch_offset = round(localtm - remotetm)
         self.board_has_utime = bool(self.eval_json(
             "print(int('utime' in uos.__dict__))"))
+        self.helper_loaded = True
 
     def device_name(self) -> str:
         'Get the name of the device connected to the micropython board.'
-        return self.pyb.device_name
+        return str(self.pyb.device_name)
 
     def write(self, response: bytes | str) -> None:
         'Call the console writer for output (convert "str" to "bytes").'
@@ -122,7 +130,7 @@ class Board:
         'Execute some code on the micropython board.'
         response: str = ""
         if self.debug & Debug.EXEC:
-            print(f"Board.exec(): code = {code}")
+            print(f"Board.exec(): code = {code!r}")
         with self.raw_repl(code):
             response = self.pyb.exec_(code, self.writer if not silent else None).decode().strip()
         if self.debug & Debug.EXEC:
@@ -142,9 +150,9 @@ class Board:
 
     def complete(self, word: str) -> list[str]:
         'Complete the python name on the board.'
-        words = [None] + word.rsplit('.', 1)  # Split module and class names
+        words = [""] + word.rsplit('.', 1)  # Split module and class names
         completions: list[str] = \
-            self.eval_json(f'_helper.complete({words[-2]}, "{words[-1]}")')
+            self.eval_json(f'_helper.complete({words[-2]!r}, {words[-1]!r})')
         return completions
 
     def cat(self, filename: str) -> None:
@@ -208,16 +216,16 @@ class Board:
         #  ["dir",  [["f1" s0, s1, s2], ["f2", s0..], ..]],
         #  ["dir2", [["f1" s0, s1, s2], ["f2", s0..], ..]], ...
         # ]
-        remotefiles = []
+        remotefiles: RemoteFilelist = []
         opts = f"{'R' in opts},{'l' in opts}"
         listing = self.eval_json(f'_helper.ls_dirs({list(dir_list)},{opts})')
         listing.sort(key=lambda d: d[0])  # Sort by directory pathname
-        for dir, file_list in listing:
+        for dirname, file_list in listing:
             # sort each directory listing by filename
             file_list.sort(key=lambda f: f[0])
         remotefiles = (  # Convert to lists of RemotePath objects
-            (dir, (RemotePath(f[0]).set_modes(f[1:]) for f in filelist))
-            for dir, filelist in listing)
+            (dirname, (RemotePath(dirname, f[0]).set_modes(f[1:]) for f in filelist))
+            for dirname, filelist in listing)
         return remotefiles
 
     def ls_dir(self, dir: str) -> Iterable[RemotePath]:
@@ -560,7 +568,7 @@ class Board:
             '_b=mem_free();collect();print([_b,mem_free()])')
         return (int(before), int(after))
 
-    def get_localtime(self) -> Sequence[int]:
-        return [
-            int(i) for i in
-            self.eval_json('import utime;print(list(utime.localtime()))')]
+    def get_time(self) -> time.struct_time:
+        time_cmd = 'import utime;print(list(utime.localtime()))'
+        time_list = list(self.eval_json(time_cmd)) + [-1]  # is_dst = unknown
+        return time.struct_time(time_list)

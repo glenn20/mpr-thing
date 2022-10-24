@@ -49,13 +49,10 @@ class BaseCommands(cmd.Cmd):
         'eval', 'exec', 'alias', 'unalias', 'set')
 
     def __init__(self, board: Board):
+        self.initialised        = False
         self.colour             = AnsiColour()
         self.multi_cmd_mode     = False
         self.shell_mode         = False
-        self.alias:  dict[str, str] = {}    # Command aliases
-        self.params: dict[str, Any] = {}    # Params we can use in prompt
-        self.names:  dict[str, str] = {}    # Map device unique_ids to names
-        self.lsspec: dict[str, str] = {}    # Extra colour specs for %ls
         self.board              = board
         self.colour             = AnsiColour()
         self.prompt             = self.base_prompt
@@ -69,7 +66,6 @@ class BaseCommands(cmd.Cmd):
         self.params: dict[str, Any] = {}    # Params we can use in prompt
         self.names:  dict[str, str] = {}    # Map device unique_ids to names
         self.lsspec: dict[str, str] = {}    # Extra colour specs for %ls
-        self.initialised: bool = False
         readline.set_completer_delims(' \t\n>;')
 
         # Cmd.cmdloop() overrides completion settings in ~/.inputrc
@@ -113,9 +109,9 @@ class BaseCommands(cmd.Cmd):
         # Load/reload the helper code onto the micropython board.
         self.board.load_helper()
 
-    def reset_hooks(self) -> None:
+    def reset(self) -> None:
         if self.initialised:
-            self.board.load_helper()
+            self.board.reset()
 
     def load_board_params(self) -> None:
         'Initialise the board parameters - used in the longform prompt'
@@ -439,7 +435,7 @@ class BaseCommands(cmd.Cmd):
 
         Completion of parameter names is supported by hitting the TAB key."""))
 
-    def default(self, line: str) -> bool:
+    def default(self, line: str) -> bool:  # type: ignore
         'Process any commandlines not matching builtin commands.'
         if not self.multi_cmd_mode and line.strip() == "%":
             # User typed '%%': Enter command line mode

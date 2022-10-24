@@ -129,8 +129,8 @@ class RemoteCmd(BaseCommands):
         opts, args = self._options(args)
         self.board.rm(args, opts)
 
-    def is_remote(self, filename: str, pwd: str) -> bool:
-        # Is the file on a remote mounted filesystem.
+    def _is_remote(self, filename: str, pwd: str) -> bool:
+        "Is the file on a remote mounted filesystem."
         return (
             filename.startswith('/remote') or
             (pwd.startswith('/remote') and not filename.startswith('/')))
@@ -146,7 +146,7 @@ class RemoteCmd(BaseCommands):
         pwd: str = self.params['pwd']
         files: list[str] = []
         for f in args:
-            if not f.startswith(":") and self.is_remote(f, pwd):
+            if not f.startswith(":") and self._is_remote(f, pwd):
                 print("get: skipping files in /remote mounted folder:", f)
             else:
                 files.append(f)
@@ -165,7 +165,7 @@ class RemoteCmd(BaseCommands):
         self.load_board_params()
         pwd: str = self.params['pwd']
         dest = args.pop()[1:] if args[-1].startswith(':') else pwd
-        if self.is_remote(dest, pwd):
+        if self._is_remote(dest, pwd):
             print(f"%put: do not put files into /remote mounted folder: {pwd}")
             return
         self.board.put(args, dest, opts + 'rv')
@@ -179,7 +179,7 @@ class RemoteCmd(BaseCommands):
         self.load_board_params()
         pwd: str = self.params['pwd']
         dest = args.pop()[1:] if args[-1].startswith(':') else pwd
-        if self.is_remote(dest, pwd):
+        if self._is_remote(dest, pwd):
             print(f"%put: do not sync files into /remote mounted folder: {pwd}")
             return
         for arg in args:
@@ -310,9 +310,7 @@ class RemoteCmd(BaseCommands):
                 (t.tm_year, t.tm_mon, t.tm_mday, 0,
                     t.tm_hour, t.tm_min, t.tm_sec, 0)))
         from time import asctime
-        t = self.board.get_localtime()
-        print(asctime(
-            (t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], 0)))
+        print(asctime(self.board.get_time()))
 
     def do_mount(self, args: Argslist) -> None:
         """
