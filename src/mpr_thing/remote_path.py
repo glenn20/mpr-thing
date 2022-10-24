@@ -63,5 +63,5 @@ class RemotePath(PurePosixPath):
         """Return True if the file exists."""
         return hasattr(self, '_exists') and self._exists
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"RemotePath({self.name!r}, {[self.mode, self.size, self.mtime]})"

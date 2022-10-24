@@ -14,16 +14,19 @@ class _MagicHelper:
         return f[f.rstrip('/').rfind('/') + 1:]
 
     @staticmethod
-    def stat(f):
+    def _stat(f):
         try:
             s = uos.stat(f)
             return [s[0], s[6], s[8]]
         except OSError:
             return []
 
+    def stat(self, f):
+        print(self._stat(f))
+
     def ls_files(self, files):
         # [["f1", s0, s1, s2, s3], ["f2", s0, s1, s2], ...]
-        print([[f] + self.stat(f) for f in files if f])
+        print([[f] + self._stat(f) for f in files if f])
 
     def ls_dirs(self, dirs, R, l):
         # [["dir",  [["f1" s0, s1, s2], ["f2", s0..], ..]],
@@ -33,7 +36,7 @@ class _MagicHelper:
         # If recursive, subdirs will be added to end of "dirs" as we go.
         while dirs:
             d = dirs.pop()
-            if not self.stat(d):
+            if not self._stat(d):
                 break
             print('{}["{}", ['.format(sep, d), end="")
             fmt = "{}"
@@ -41,7 +44,7 @@ class _MagicHelper:
                 p = d + f
                 if R and m & IS_DIR:
                     dirs.append(p + "/")  # Add dir to list for processing
-                s = [f] + self.stat(p) if l else [f, m]
+                s = [f] + self._stat(p) if l else [f, m]
                 print(fmt.format(s), end="")
                 fmt = ",{}"
             print(']]')
