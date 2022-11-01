@@ -104,10 +104,10 @@ class BaseCommands(cmd.Cmd):
         if self.initialised:
             return
         self.initialised = True
-        self.load_command_file(OPTIONS_FILE)
-        self.load_command_file(RC_FILE)
         # Load/reload the helper code onto the micropython board.
         self.board.load_helper()
+        self.load_command_file(OPTIONS_FILE)
+        self.load_command_file(RC_FILE)
 
     def reset(self) -> None:
         if self.initialised:
