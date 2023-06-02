@@ -9,7 +9,9 @@ import select, re, time, locale
 from typing import Callable
 from serial import Serial
 
-from mpremote import main as mpremote_main
+import mpremote.main
+from mpremote import repl as mpremote_repl
+from mpremote.main import State
 from mpremote.pyboard import PyboardError
 from mpremote.pyboardextended import PyboardExtended
 from mpremote.console import ConsolePosix, ConsoleWindows
@@ -64,7 +66,7 @@ def cursor_column(
 # It interprets a "!" or "%" character typed at the start of a line
 # at the base python prompt as starting a "magic" command.
 def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
-        pyb:                PyboardExtended,
+        state:              State,
         console_in:         ConsolePosix | ConsoleWindows,
         console_out_write:  Writer,
         *,
@@ -73,6 +75,7 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
     'An overload function for the main repl loop in "mpremote".'
 
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
+    pyb: PyboardExtended = state.pyb  # type: ignore
     remote = RemoteCmd(Board(pyb, console_out_write))
     prompt = b"\n>>> "
 
@@ -80,7 +83,7 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
         console_in.waitchar(pyb.serial)
         c = console_in.readchar()
         if c:
-            if c == b"\x1d":  # ctrl-], quit
+            if c in (b"\x1d", b"\x18"):  # ctrl-] or ctrl-x, quit
                 break
             elif c == b"\x04":  # ctrl-D
                 # do a soft reset and reload the filesystem hook
@@ -158,14 +161,14 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
 
 
 # Override the mpremote main repl loop!!!
-mpremote_main.do_repl_main_loop = my_do_repl_main_loop
+mpremote_repl.do_repl_main_loop = my_do_repl_main_loop
 
 
 def main() -> int:
     # Set locale for file listings, etc.
     locale.setlocale(locale.LC_ALL, '')
 
-    return mpremote_main.main()     # type: ignore
+    return mpremote.main.main()     # type: ignore
 
 
 if __name__ == "__main__":

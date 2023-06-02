@@ -286,7 +286,7 @@ class BaseCommands(cmd.Cmd):
 
     def do_unalias(self, args: Argslist) -> None:
         """
-        Delete aliases which has been set with the % alias command:
+        Delete aliases which have been set with the % alias command:
             %unalias ll [...]"""
         for arg in args:
             del self.alias[arg]
@@ -505,7 +505,7 @@ class BaseCommands(cmd.Cmd):
         # Execute filename completion on the board.
         lsdir = self.board.ls_dir(pre or '.') or []
         return [
-            pre + f.slashify()
+            f.slashify()
             for f in lsdir if f.name.startswith(post)]
 
     def complete_params(self, word: str) -> Argslist:

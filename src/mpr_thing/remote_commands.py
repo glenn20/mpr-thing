@@ -92,10 +92,10 @@ class RemoteCmd(BaseCommands):
             with tempfile.TemporaryDirectory() as tmpdir:
                 basename = Path(arg).name
                 dest = Path(tmpdir) / basename
-                self.board.get(arg, tmpdir)
+                self.board.get([arg], tmpdir)
                 if 0 == os.system(
                         f'eval ${{EDITOR:-/usr/bin/vi}} {str(dest)}'):
-                    self.board.put(str(dest), arg)
+                    self.board.put([str(dest)], arg)
 
     def do_touch(self, args: Argslist) -> None:
         """

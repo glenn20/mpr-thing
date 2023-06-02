@@ -107,7 +107,7 @@ class Board:
         self.helper_loaded = True
 
     def device_name(self) -> str:
-        'Get the name of the device connected to the micropython board.'
+        'Get the name of the serial port connected to the micropython board.'
         return str(self.pyb.device_name)
 
     def write(self, response: bytes | str) -> None:

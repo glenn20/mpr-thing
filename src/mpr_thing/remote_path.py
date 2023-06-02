@@ -52,15 +52,15 @@ class RemotePath(PurePosixPath):
         return name + "/" if self.is_dir() and name != "/" else name
 
     def is_dir(self) -> bool:
-        """Return True if the file is a directory."""
+        "Return True if the file is a directory."
         return hasattr(self, '_exists') and self._exists and ((self.mode & stat.S_IFDIR) != 0)
 
     def is_file(self) -> bool:
-        """Return True of the file is a regular file."""
+        "Return True if the file is a regular file."
         return hasattr(self, '_exists') and self._exists and ((self.mode & stat.S_IFREG) != 0)
 
     def exists(self) -> bool:
-        """Return True if the file exists."""
+        "Return True if the file exists."
         return hasattr(self, '_exists') and self._exists
 
     def __repr__(self) -> str:
