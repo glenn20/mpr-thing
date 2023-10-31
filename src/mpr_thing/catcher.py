@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from traceback import print_exc
-from typing import Callable, Generator, Any
+from typing import Any, Callable, Generator
 
 from mpremote.pyboard import PyboardError
 from mpremote.pyboardextended import PyboardExtended
@@ -41,7 +41,7 @@ def catcher() -> Generator[None, None, None]:
     except KeyboardInterrupt:
         print("Keyboard Interrupt.")
         if nested_depth > 1:
-            raise    # Unwind to the outermost catcher
+            raise  # Unwind to the outermost catcher
     except (OSError, FileNotFoundError) as exc:
         print(f"{exc.__class__.__name__}: {exc}")
     except Exception as exc:
@@ -55,9 +55,9 @@ def catcher() -> Generator[None, None, None]:
 # A context manager for the raw_repl - not re-entrant
 @contextmanager
 def raw_repl(
-    pyb:        PyboardExtended,
-    write_fn:   Writer,
-    message:    Any = None,
+    pyb: PyboardExtended,
+    write_fn: Writer,
+    message: Any = None,
     soft_reset: bool = False,
 ) -> Generator[None, None, None]:
     """Enter the raw_repl on the micropython board and trap and report
@@ -83,10 +83,10 @@ def raw_repl(
         raise
     except PyboardError as exc:
         write_fn("PyboardError: {!r}\r\n".format(message).encode())
-        if len(exc.args) == 3:    # Raised by Pyboard.exec_()
+        if len(exc.args) == 3:  # Raised by Pyboard.exec_()
             write_fn(exc.args[1])
             write_fn(exc.args[2])
-        else:           # Others just include a single message
+        else:  # Others just include a single message
             write_fn(exc.args[0].encode())
     except Exception as err:
         raise err

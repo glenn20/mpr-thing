@@ -12,22 +12,22 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from .base_commands import Argslist, BaseCommands
 from .board import Board
-from .base_commands import BaseCommands, Argslist
 
 
 # The commands we support at the remote command prompt.
 # Inherits from base_commands.Commands which contains all the
 # initialisation and utility methods and overrides for cmd.Cmd class.
 class RemoteCmd(BaseCommands):
-    'A class to run commands on the micropython board.'
+    "A class to run commands on the micropython board."
 
     def __init__(self, board: Board):
         super().__init__(board)
 
     @staticmethod
     def _options(args: Argslist) -> tuple[str, Argslist]:
-        "Extract options from args list and return (\"-opts\", args)."
+        'Extract options from args list and return ("-opts", args).'
         opts, new_args = "", []
         for arg in args:
             if arg.startswith("-"):
@@ -45,15 +45,15 @@ class RemoteCmd(BaseCommands):
             print("%fs: No fs command provided.")
             return
         fs_cmd = {
-            'cat':      self.do_cat,
-            'ls':       self.do_ls,
-            'cp':       self.do_cp,
-            'rm':       self.do_rm,
-            'mkdir':    self.do_mkdir,
-            'rmdir':    self.do_rmdir,
+            "cat": self.do_cat,
+            "ls": self.do_ls,
+            "cp": self.do_cp,
+            "rm": self.do_rm,
+            "mkdir": self.do_mkdir,
+            "rmdir": self.do_rmdir,
         }.get(args[0])
         if not fs_cmd:
-            print('%fs: Invalid fs command:', args[0])
+            print("%fs: Invalid fs command:", args[0])
             return
         fs_cmd(args[1:])
 
@@ -65,14 +65,14 @@ class RemoteCmd(BaseCommands):
         "set" command to add or change the file listing colours."""
         opts, args = self._options(args)
         filelist = list(self.board.ls(args, opts))
-        linebreak = ''
+        linebreak = ""
         first_time = True
         for dir, files in filelist:
             if not first_time and len(filelist) > 2:  # Print the directory name
-                print(f'{linebreak}{self.colour.dir(dir)}')
+                print(f"{linebreak}{self.colour.dir(dir)}")
             if dir or files:
                 self.print_files(files, opts)
-                linebreak = '\n'
+                linebreak = "\n"
             first_time = False
 
     def do_cat(self, args: Argslist) -> None:
@@ -89,12 +89,12 @@ class RemoteCmd(BaseCommands):
         """
         for arg in args:
             import tempfile
+
             with tempfile.TemporaryDirectory() as tmpdir:
                 basename = Path(arg).name
                 dest = Path(tmpdir) / basename
                 self.board.get([arg], tmpdir)
-                if 0 == os.system(
-                        f'eval ${{EDITOR:-/usr/bin/vi}} {str(dest)}'):
+                if 0 == os.system(f"eval ${{EDITOR:-/usr/bin/vi}} {str(dest)}"):
                     self.board.put([str(dest)], arg)
 
     def do_touch(self, args: Argslist) -> None:
@@ -131,9 +131,9 @@ class RemoteCmd(BaseCommands):
 
     def _is_remote(self, filename: str, pwd: str) -> bool:
         "Is the file on a remote mounted filesystem."
-        return (
-            filename.startswith('/remote') or
-            (pwd.startswith('/remote') and not filename.startswith('/')))
+        return filename.startswith("/remote") or (
+            pwd.startswith("/remote") and not filename.startswith("/")
+        )
 
     def do_get(self, args: Argslist) -> None:
         """
@@ -143,15 +143,15 @@ class RemoteCmd(BaseCommands):
         """
         opts, args = self._options(args)
         self.load_board_params()
-        pwd: str = self.params['pwd']
+        pwd: str = self.params["pwd"]
         files: list[str] = []
         for f in args:
             if not f.startswith(":") and self._is_remote(f, pwd):
                 print("get: skipping files in /remote mounted folder:", f)
             else:
                 files.append(f)
-        dest = files.pop()[1:] if files[-1].startswith(':') else '.'
-        self.board.get(files, dest, opts + 'rv')
+        dest = files.pop()[1:] if files[-1].startswith(":") else "."
+        self.board.get(files, dest, opts + "rv")
 
     def do_put(self, args: Argslist) -> None:
         """
@@ -163,12 +163,12 @@ class RemoteCmd(BaseCommands):
         if not args:
             print("%put: Must provide at least one file or directory to copy.")
         self.load_board_params()
-        pwd: str = self.params['pwd']
-        dest = args.pop()[1:] if args[-1].startswith(':') else pwd
+        pwd: str = self.params["pwd"]
+        dest = args.pop()[1:] if args[-1].startswith(":") else pwd
         if self._is_remote(dest, pwd):
             print(f"%put: do not put files into /remote mounted folder: {pwd}")
             return
-        self.board.put(args, dest, opts + 'rv')
+        self.board.put(args, dest, opts + "rv")
 
     def do_rsync(self, args: Argslist) -> None:
         """
@@ -177,8 +177,8 @@ class RemoteCmd(BaseCommands):
         """
         opts, args = self._options(args)
         self.load_board_params()
-        pwd: str = self.params['pwd']
-        dest = args.pop()[1:] if args[-1].startswith(':') else pwd
+        pwd: str = self.params["pwd"]
+        dest = args.pop()[1:] if args[-1].startswith(":") else pwd
         if self._is_remote(dest, pwd):
             print(f"%put: do not sync files into /remote mounted folder: {pwd}")
             return
@@ -190,7 +190,7 @@ class RemoteCmd(BaseCommands):
         """
         Change the current directory on the board (with os.setpwd()):
             %cd /lib"""
-        arg = args[0] if args else '/'
+        arg = args[0] if args else "/"
         self.board.cd(arg)
 
     def do_pwd(self, args: Argslist) -> None:
@@ -198,7 +198,7 @@ class RemoteCmd(BaseCommands):
         Print the current working directory on the board:
             %pwd"""
         if args:
-            print('pwd: unexpected args:', args)
+            print("pwd: unexpected args:", args)
         print(self.board.pwd())
 
     def do_lcd(self, args: Argslist) -> None:
@@ -234,8 +234,8 @@ class RemoteCmd(BaseCommands):
         Exec the python code on the board, eg.:
             %exec print(34 * 35)
         "\\n" will be substituted with the end-of-line character, eg:
-            %exec 'print("one")\\nprint("two")' """
-        response = self.board.exec(' '.join(args).replace('\\n', '\n'))
+            %exec 'print("one")\\nprint("two")'"""
+        response = self.board.exec(" ".join(args).replace("\\n", "\n"))
         if response:
             print(response)
 
@@ -270,9 +270,7 @@ class RemoteCmd(BaseCommands):
         Hit the TAB key after typing '{' to see all the available parameters.
         """
         opts, args = self._options(args)
-        print(
-            ' '.join(args).format_map(self.params),
-            end='' if 'n' in opts else '\n')
+        print(" ".join(args).format_map(self.params), end="" if "n" in opts else "\n")
 
     # Board commands
     def do_uname(self, args: Argslist) -> None:
@@ -280,12 +278,12 @@ class RemoteCmd(BaseCommands):
         Print information about the hardware and software:
             %uname"""
         if args:
-            print('uname: unexpected args:', args)
+            print("uname: unexpected args:", args)
         self.load_board_params()
         print(
-            'Micropython {nodename} ({unique_id}) '
-            '{version} {sysname} {machine}'
-            .format_map(self.params))
+            "Micropython {nodename} ({unique_id}) "
+            "{version} {sysname} {machine}".format_map(self.params)
+        )
 
     def do_time(self, args: Argslist) -> None:
         """
@@ -293,23 +291,36 @@ class RemoteCmd(BaseCommands):
             %time set       : Set the RTC clock on the board from local time
             %time set utc   : Set the RTC clock on the board from UTC time
             %time           : Print the RTC clock time on the board"""
-        if args and args[0] == 'set':
+        if args and args[0] == "set":
             from time import gmtime, localtime
-            t = gmtime() if 'utc' in args else localtime()
+
+            t = gmtime() if "utc" in args else localtime()
             rtc_cmds = {
-                'esp8266': 'from machine import RTC;RTC().datetime({})',
-                'pyb':     'from pyb import RTC;RTC().datetime({})',
-                'pycom':   'from machine import RTC;_t={};'
-                           'RTC().init((_t[i] for i in [0,1,2,4,5,6]))',
+                "esp8266": "from machine import RTC;RTC().datetime({})",
+                "pyb": "from pyb import RTC;RTC().datetime({})",
+                "pycom": "from machine import RTC;_t={};"
+                "RTC().init((_t[i] for i in [0,1,2,4,5,6]))",
             }
             self.load_board_params()
             fmt = rtc_cmds.get(
-                self.params['sysname'],
-                'from machine import RTC;RTC().init({})')
-            self.board.exec(fmt.format(
-                (t.tm_year, t.tm_mon, t.tm_mday, 0,
-                    t.tm_hour, t.tm_min, t.tm_sec, 0)))
+                self.params["sysname"], "from machine import RTC;RTC().init({})"
+            )
+            self.board.exec(
+                fmt.format(
+                    (
+                        t.tm_year,
+                        t.tm_mon,
+                        t.tm_mday,
+                        0,
+                        t.tm_hour,
+                        t.tm_min,
+                        t.tm_sec,
+                        0,
+                    )
+                )
+            )
         from time import asctime
+
         print(asctime(self.board.get_time()))
 
     def do_mount(self, args: Argslist) -> None:
@@ -319,38 +330,43 @@ class RemoteCmd(BaseCommands):
             %mount [folder]   # If no folder specified use '.'"""
         # Don't use relative paths - these can change if we "!cd .."
         opts, args = self._options(args)
-        path = args[0] if args else '.'
+        path = args[0] if args else "."
         self.board.mount(path, opts)
-        print(f'Mounted local folder {args} on /remote')
-        self.board.exec('print(uos.getcwd())')
+        print(f"Mounted local folder {args} on /remote")
+        self.board.exec("print(uos.getcwd())")
 
     def do_umount(self, args: Argslist) -> None:
         """
         Unmount any Virtual Filesystem mounted at \"/remote\" on the board:
             %umount"""
         if args:
-            print('umount: unexpected args:', args)
+            print("umount: unexpected args:", args)
         self.board.umount()
-        self.board.exec('print(uos.getcwd())')
+        self.board.exec("print(uos.getcwd())")
 
     def do_free(self, args: Argslist) -> None:
         """
         Print the free and used memory:
             %free"""
-        verbose = '1' if args and args[0] == '-v' else ''
-        self.board.exec(
-            f'from micropython import mem_info; print(mem_info({verbose}))')
+        verbose = "1" if args and args[0] == "-v" else ""
+        self.board.exec(f"from micropython import mem_info; print(mem_info({verbose}))")
 
     def do_df(self, args: Argslist) -> None:
         """
         Print the free and used flash storage:
             %df [dir1, dir2, ...]"""
         df_list = self.board.df(args)
-        print("{:10} {:>9} {:>9} {:>9} {:>3}% {}".format(
-            "", "Bytes", "Used", "Available", "Use", "Mounted on"))
+        print(
+            "{:10} {:>9} {:>9} {:>9} {:>3}% {}".format(
+                "", "Bytes", "Used", "Available", "Use", "Mounted on"
+            )
+        )
         for name, total, used, free in df_list:
-            print("{:10} {:9d} {:9d} {:9d} {:3d}% {}".format(
-                name, total, used, free, round(100 * used / total), name))
+            print(
+                "{:10} {:9d} {:9d} {:9d} {:3d}% {}".format(
+                    name, total, used, free, round(100 * used / total), name
+                )
+            )
 
     def do_gc(self, args: Argslist) -> None:
         """
@@ -358,7 +374,7 @@ class RemoteCmd(BaseCommands):
         Will also print the free memory before and after gc:
             %gc"""
         if args:
-            print('gc: unexpected args:', args)
+            print("gc: unexpected args:", args)
         before, after = self.board.gc()
         print("Before GC: Free bytes =", before)
         print("After  GC: Free bytes =", after)

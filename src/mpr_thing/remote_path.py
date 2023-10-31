@@ -14,15 +14,15 @@ from typing import Sequence
 
 # Paths on the board are always Posix paths even if local host is Windows.
 class RemotePath(PurePosixPath):
-    'A Pathlib compatible class to hold details of files on the board.'
+    "A Pathlib compatible class to hold details of files on the board."
 
     epoch_offset: int = 0
 
     def __init__(self, *args: str) -> None:
         # Note: Path initialises from *args in __new__()!!!
-        self.mode    = 0
-        self.size    = 0
-        self.mtime   = 0
+        self.mode = 0
+        self.size = 0
+        self.mtime = 0
         self._exists = False
 
     def set_modes(self, stat: Sequence[int]) -> RemotePath:
@@ -35,9 +35,9 @@ class RemotePath(PurePosixPath):
         Returns:
             RemotePath: [description]
         """
-        self.mode    = stat[0] if stat else 0
-        self.size    = stat[1] if stat[1:] else -1
-        self.mtime   = stat[2] + self.epoch_offset if stat[2:] else -1
+        self.mode = stat[0] if stat else 0
+        self.size = stat[1] if stat[1:] else -1
+        self.mtime = stat[2] + self.epoch_offset if stat[2:] else -1
         self._exists = bool(stat)
         return self  # So we can f = RemotePath('/main.py').set_modes(...)
 
@@ -53,15 +53,23 @@ class RemotePath(PurePosixPath):
 
     def is_dir(self) -> bool:
         "Return True if the file is a directory."
-        return hasattr(self, '_exists') and self._exists and ((self.mode & stat.S_IFDIR) != 0)
+        return (
+            hasattr(self, "_exists")
+            and self._exists
+            and ((self.mode & stat.S_IFDIR) != 0)
+        )
 
     def is_file(self) -> bool:
         "Return True if the file is a regular file."
-        return hasattr(self, '_exists') and self._exists and ((self.mode & stat.S_IFREG) != 0)
+        return (
+            hasattr(self, "_exists")
+            and self._exists
+            and ((self.mode & stat.S_IFREG) != 0)
+        )
 
     def exists(self) -> bool:
         "Return True if the file exists."
-        return hasattr(self, '_exists') and self._exists
+        return hasattr(self, "_exists") and self._exists
 
     def __repr__(self) -> str:
         return f"RemotePath({self.name!r}, {[self.mode, self.size, self.mtime]})"

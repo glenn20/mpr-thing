@@ -9,7 +9,8 @@
 # Allow list[str] instead of List[str]
 from __future__ import annotations
 
-import os, re
+import os
+import re
 import subprocess
 from typing import Any, Optional
 

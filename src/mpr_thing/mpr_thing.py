@@ -5,16 +5,19 @@
 # vscode-fold=1
 
 
-import select, re, time, locale
+import locale
+import re
+import select
+import time
 from typing import Callable
-from serial import Serial
 
 import mpremote.main
 from mpremote import repl as mpremote_repl
+from mpremote.console import ConsolePosix, ConsoleWindows
 from mpremote.main import State
 from mpremote.pyboard import PyboardError
 from mpremote.pyboardextended import PyboardExtended
-from mpremote.console import ConsolePosix, ConsoleWindows
+from serial import Serial
 
 from .board import Board
 from .remote_commands import RemoteCmd
@@ -23,55 +26,54 @@ Writer = Callable[[bytes], None]  # A type alias for console write functions
 
 
 def hard_reset(pyb: PyboardExtended) -> None:
-    'Toggle DTR on the serial port to force a hardware reset of the board.'
-    while hasattr(pyb.serial, 'orig_serial'):
+    "Toggle DTR on the serial port to force a hardware reset of the board."
+    while hasattr(pyb.serial, "orig_serial"):
         pyb.serial = pyb.serial.orig_serial
     if isinstance(pyb.serial, Serial):
         serial = pyb.serial
-        if hasattr(serial, 'dtr'):
+        if hasattr(serial, "dtr"):
             serial.dtr = not serial.dtr
             time.sleep(0.1)
             serial.dtr = not serial.dtr
         pyb.mounted = False
 
 
-def cursor_column(
-        console_in: ConsolePosix | ConsoleWindows,
-        writer: Writer) -> int:
-    'Query the console to get the current cursor column number.'
-    writer(b'\x1b[6n')   # Query terminal for cursor position
-    buf = b''
-    for _ in range(10):             # Don't wait forever - just in case
+def cursor_column(console_in: ConsolePosix | ConsoleWindows, writer: Writer) -> int:
+    "Query the console to get the current cursor column number."
+    writer(b"\x1b[6n")  # Query terminal for cursor position
+    buf = b""
+    for _ in range(10):  # Don't wait forever - just in case
         if isinstance(console_in, ConsolePosix):
             select.select([console_in.infd], [], [], 0.1)
         else:
             # TODO: Windows terminal code is untested - I hope it works...
-            for i in range(10):     # Don't wait forever - just in case
+            for i in range(10):  # Don't wait forever - just in case
                 if console_in.inWaiting():
                     break
                 time.sleep(0.01)
         c = console_in.readchar()
         if c is not None:
             buf += c
-            if c == b'R':           # Wait for end of escape sequence
+            if c == b"R":  # Wait for end of escape sequence
                 break
     else:
         return -1
 
-    match = re.match(r'^\x1b\[(\d)*;(\d*)R', buf.decode())
+    match = re.match(r"^\x1b\[(\d)*;(\d*)R", buf.decode())
     return int(match.groups()[1]) if match else -1
 
 
 # This is going to override do_repl_main_loop in the mpremote module
 # It interprets a "!" or "%" character typed at the start of a line
 # at the base python prompt as starting a "magic" command.
-def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
-        state:              State,
-        console_in:         ConsolePosix | ConsoleWindows,
-        console_out_write:  Writer,
-        *,
-        code_to_inject:     bytes,
-        file_to_inject:     str) -> None:
+def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
+    state: State,
+    console_in: ConsolePosix | ConsoleWindows,
+    console_out_write: Writer,
+    *,
+    code_to_inject: bytes,
+    file_to_inject: str,
+) -> None:
     'An overload function for the main repl loop in "mpremote".'
 
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
@@ -96,10 +98,11 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
                 beginning_of_line = True
                 remote.reset()
             elif c == b"\x0a" and code_to_inject is not None:
-                pyb.serial.write(code_to_inject)    # ctrl-j, inject code
+                pyb.serial.write(code_to_inject)  # ctrl-j, inject code
             elif c == b"\x0b" and file_to_inject is not None:
-                console_out_write(                  # ctrl-k, inject script
-                    bytes("Injecting %s\r\n" % file_to_inject, "utf8"))
+                console_out_write(  # ctrl-k, inject script
+                    bytes("Injecting %s\r\n" % file_to_inject, "utf8")
+                )
                 pyb.enter_raw_repl(soft_reset=False)
                 with open(file_to_inject, "rb") as f:
                     pyfile = f.read()
@@ -107,13 +110,17 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
                     pyb.exec_raw_no_follow(pyfile)
                 except PyboardError as er:
                     console_out_write(b"Error:\r\n")
-                    console_out_write(repr(er).encode('utf-8'))
+                    console_out_write(repr(er).encode("utf-8"))
                 pyb.exit_raw_repl()
                 beginning_of_line = True
-            elif (c in b"%!" and at_prompt  # Magic sequence if at start of line
-                    and (beginning_of_line or
-                         cursor_column(
-                             console_in, console_out_write) == len(prompt))):
+            elif (
+                c in b"%!"
+                and at_prompt  # Magic sequence if at start of line
+                and (
+                    beginning_of_line
+                    or cursor_column(console_in, console_out_write) == len(prompt)
+                )
+            ):
                 console_out_write(b"\x1b[2K")  # Clear other chars on line
                 console_in.exit()
                 try:
@@ -123,7 +130,7 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
                 if c == b"!":
                     pyb.serial.write(b"\x0d")  # Force another prompt
                 beginning_of_line = True
-            elif c == b"\x0d":      # ctrl-m: carriage return
+            elif c == b"\x0d":  # ctrl-m: carriage return
                 pyb.serial.write(c)
                 beginning_of_line = True
             else:
@@ -151,7 +158,7 @@ def my_do_repl_main_loop(   # noqa: C901 - ignore function is too complex
                 # Set at_prompt=True if we see the prompt string
                 # Stays set till the next newline char
                 if oc == prompt[prompt_char_count]:
-                    at_prompt = False           # Reset at_prompt after '\n'
+                    at_prompt = False  # Reset at_prompt after '\n'
                     prompt_char_count += 1
                     if prompt_char_count == len(prompt):
                         prompt_char_count = 0
@@ -166,9 +173,9 @@ mpremote_repl.do_repl_main_loop = my_do_repl_main_loop
 
 def main() -> int:
     # Set locale for file listings, etc.
-    locale.setlocale(locale.LC_ALL, '')
+    locale.setlocale(locale.LC_ALL, "")
 
-    return mpremote.main.main()     # type: ignore
+    return mpremote.main.main()  # type: ignore
 
 
 if __name__ == "__main__":

@@ -2,7 +2,8 @@
 # Copyright (c) 2021 @glenn20
 # This file contains code to be loaded onto the micropython board
 
-import uos, gc
+import os
+import gc
 from micropython import const
 
 IS_DIR = const(0x4000)
@@ -16,7 +17,7 @@ class _MagicHelper:
     @staticmethod
     def _stat(f):
         try:
-            s = uos.stat(f)
+            s = os.stat(f)
             return [s[0], s[6], s[8]]
         except OSError:
             return []
@@ -40,7 +41,7 @@ class _MagicHelper:
                 break
             print('{}["{}", ['.format(sep, d), end="")
             fmt = "{}"
-            for f, m, *_ in uos.ilistdir(d):  # type: ignore
+            for f, m, *_ in os.ilistdir(d):  # type: ignore
                 p = d + f
                 if R and m & IS_DIR:
                     dirs.append(p + "/")  # Add dir to list for processing
@@ -65,9 +66,9 @@ class _MagicHelper:
     def cp_dir(self, d1, d2, v, n):  # d1 & d2 must end in "/"
         if v: print(d2)
         if not n:
-            try: uos.mkdir(d2[:-1])
+            try: os.mkdir(d2[:-1])
             except OSError: pass
-        for f, m, *_ in uos.ilistdir(d1):  # type: ignore
+        for f, m, *_ in os.ilistdir(d1):  # type: ignore
             if m & IS_DIR:
                 self.cp_dir(d1 + f + "/", d2 + f + "/", v, n)
             else:
@@ -81,18 +82,18 @@ class _MagicHelper:
 
     def rm(self, files, v, n):
         for f in files:
-            if not uos.stat(f)[0] & IS_DIR:
-                if not n: uos.remove(f)
+            if not os.stat(f)[0] & IS_DIR:
+                if not n: os.remove(f)
             else:
-                self.rm(("{}/{}".format(f, i[0]) for i in uos.ilistdir(f)), v, n)  # type: ignore
-                if not n: uos.rmdir(f)
+                self.rm(("{}/{}".format(f, i[0]) for i in os.ilistdir(f)), v, n)
+                if not n: os.rmdir(f)
             if v: print(f)
 
     def complete(self, base, word):
         print([w for w in (dir(base) if base else dir()) if w.startswith(word)])
 
     def pr(self):   # Return some dynamic values for the command prompt
-        print([uos.getcwd(), gc.mem_alloc(), gc.mem_free()])  # type: ignore
+        print([os.getcwd(), gc.mem_alloc(), gc.mem_free()])
 
 
 _helper = _MagicHelper()
