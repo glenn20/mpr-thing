@@ -1,30 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
 [project]
 name = "mpr-thing"
-version = "0.0.1"
-authors = [
-  { name="Glenn Moloney", email = "glenn.moloney@gmail.com" },
-]
 description = "Enhance mpremote tool."
+authors = [{name="glenn20", email = "6965319+glenn20@users.noreply.github.com"}]
+urls = {Homepage = "https://github.com/glenn20/mpr-thing"}
 readme = "README.md"
-license = { file="LICENSE" }
-requires-python = ">=3.7"
+license = {text = "MIT"}
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+requires-python = ">=3.7"
+dynamic = ["dependencies", "version"]
 
-[project.urls]
-"Homepage" = "https://github.com/glenn20/mpr-thing"
-"Bug Tracker" = "https://github.com/glenn20/mpr-thing/issues"
+[tool.hatch.version]
+path = "src/mpr_thing/__init__.py"
 
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+[project.scripts]
+mpr-thing = "mpr_thing.mpr_thing:main"
 
-[tool.mypy]
-strict = true
-warn_unused_ignores = true
-warn_return_any = true
-disallow_untyped_calls = false
-files = "src/mpr_thing/*.py"
+[tool.hatch.build.targets.wheel]
+packages = ["src/mpr_thing"]
+
+[tool.ruff]
+target-version = "py37"
