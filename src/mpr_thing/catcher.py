@@ -12,8 +12,7 @@ from contextlib import contextmanager
 from traceback import print_exc
 from typing import Any, Callable, Generator
 
-from mpremote.pyboard import PyboardError
-from mpremote.pyboardextended import PyboardExtended
+from mpremote.transport_serial import SerialTransport, TransportError
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
@@ -55,7 +54,7 @@ def catcher() -> Generator[None, None, None]:
 # A context manager for the raw_repl - not re-entrant
 @contextmanager
 def raw_repl(
-    pyb: PyboardExtended,
+    transport: SerialTransport,
     write_fn: Writer,
     message: Any = None,
     soft_reset: bool = False,
@@ -71,18 +70,18 @@ def raw_repl(
     restore_repl = False
     try:
         # We can nest raw_repl() managers - only enter raw repl if necessary
-        if not pyb.in_raw_repl:
+        if not transport.in_raw_repl:
             restore_repl = True
-            pyb.enter_raw_repl(soft_reset)
+            transport.enter_raw_repl(soft_reset)
         yield
 
     except KeyboardInterrupt:
         # ctrl-C twice: interrupt any running program
         print("Interrupting command on board.")
-        pyb.serial.write(b"\r\x03\x03")
+        transport.serial.write(b"\r\x03\x03")
         raise
-    except PyboardError as exc:
-        write_fn("PyboardError: {!r}\r\n".format(message).encode())
+    except TransportError as exc:
+        write_fn("TransportError: {!r}\r\n".format(message).encode())
         if len(exc.args) == 3:  # Raised by Pyboard.exec_()
             write_fn(exc.args[1])
             write_fn(exc.args[2])
@@ -92,6 +91,6 @@ def raw_repl(
         raise err
     finally:
         # Only exit the raw_repl if we entered it with this instance
-        if restore_repl and pyb.in_raw_repl:
-            pyb.exit_raw_repl()
-            pyb.read_until(4, b">>> ")
+        if restore_repl and transport.in_raw_repl:
+            transport.exit_raw_repl()
+            transport.read_until(4, b">>> ")

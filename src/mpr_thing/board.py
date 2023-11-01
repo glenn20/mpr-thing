@@ -17,7 +17,7 @@ from enum import IntFlag
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence
 
-from mpremote.main import State
+from mpremote.transport_serial import SerialTransport
 
 from .catcher import raw_repl
 from .remote_path import RemotePath
@@ -70,14 +70,14 @@ class Board:
     on a micropython board.
     """
 
-    def __init__(self, pyb: PyboardExtended, writer: Writer) -> None:
+    def __init__(self, transport: SerialTransport, writer: Writer) -> None:
         """Construct a "Board" instance.
 
         Args:
             pyb: An instance of the PyboardExtended class from mpremote tool.
             writer: A function to print output from the micropython board.
         """
-        self.pyb = pyb
+        self.transport: SerialTransport = transport  # type: ignore
         self.writer = writer
         self.default_depth = 40  # Max recursion depth for cp(), rm()
         self.debug: Debug = Debug.NONE
@@ -104,24 +104,24 @@ class Board:
         remotetm: int = self.eval_json(f"import utime;print(utime.mktime({tt[:8]}))")
         RemotePath.epoch_offset = round(localtm - remotetm)
         self.board_has_utime = bool(
-            self.eval_json("print(int('utime' in uos.__dict__))")
+            self.eval_json("print(int('utime' in os.__dict__))")
         )
         self.helper_loaded = True
 
     def device_name(self) -> str:
         "Get the name of the serial port connected to the micropython board."
-        return str(self.pyb.device_name)
+        return str(self.transport.device_name)
 
     def write(self, response: bytes | str) -> None:
         'Call the console writer for output (convert "str" to "bytes").'
         if response:
-            if not isinstance(response, bytes):
+            if isinstance(response, str):
                 response = bytes(response, "utf-8")
             self.writer(response)
 
     def raw_repl(self, message: Any = None) -> Any:
         "Return a context manager for the micropython raw repl."
-        return raw_repl(self.pyb, self.write, message)
+        return raw_repl(self.transport, self.write, message)
 
     # Execute stuff on the micropython board
     def exec(self, code: bytes | str, silent: bool = True) -> str:
@@ -131,7 +131,7 @@ class Board:
             print(f"Board.exec(): code = {code!r}")
         with self.raw_repl(code):
             response = (
-                self.pyb.exec_(code, self.writer if not silent else None)
+                self.transport.exec(code, self.writer if not silent else None)
                 .decode()
                 .strip()
             )
@@ -161,13 +161,14 @@ class Board:
     def cat(self, filename: str) -> None:
         'List the contents of the file "filename" on the board.'
         with self.raw_repl():
-            self.pyb.fs_cat(filename)
+            self.transport.fs_cat(filename)
 
     def touch(self, filename: str) -> None:
-        self.exec(f'open("{filename}", "a").close()')
+        with self.raw_repl():
+            self.transport.fs_touch(filename)
 
     def cd(self, filename: str) -> None:
-        self.exec(f"uos.chdir({filename!r})")
+        self.exec(f"import os; os.chdir({filename!r})")
 
     def pwd(self) -> str:
         pwd: str = self.eval_json('print("\\"{}\\"".format(uos.getcwd()))')
@@ -175,11 +176,11 @@ class Board:
 
     def mkdir(self, filename: str) -> None:
         with self.raw_repl():
-            self.pyb.fs_mkdir(filename)
+            self.transport.fs_mkdir(filename)
 
     def rmdir(self, filename: str) -> None:
         with self.raw_repl():
-            self.pyb.fs_rmdir(filename)
+            self.transport.fs_rmdir(filename)
 
     def mount(self, directory: str, opts: str = "") -> None:
         path = os.path.realpath(directory)
@@ -187,14 +188,14 @@ class Board:
             print("%mount: No such directory:", path)
             return
         with self.raw_repl():
-            self.pyb.mount_local(path, "l" in opts)
+            self.transport.mount_local(path, unsafe_links="l" in opts)
 
     def umount(self) -> None:
         'Unmount any Virtual Filesystem mounted at "/remote" on the board.'
         # Must chdir before umount or bad things happen.
         self.exec('uos.getcwd().startswith("/remote") and uos.chdir("/")')
         with self.raw_repl():
-            self.pyb.umount_local()
+            self.transport.umount_local()
 
     def ls_files(self, filenames: Filenames) -> Iterable[RemotePath]:
         "Return a list of files (RemotePath) on board for list of filenames."
@@ -340,7 +341,7 @@ class Board:
             print(str(dest))
         if not dry_run:
             with self.raw_repl(("get_file", filename, dest)):
-                self.pyb.fs_get(str(filename), str(dest))
+                self.transport.fs_get(str(filename), str(dest))
 
     def get_dir(
         self, dir: PathLike, dest: PathLike, verbose: bool, dry_run: bool
@@ -435,7 +436,7 @@ class Board:
         if "n" in opts:
             return
         if filename.is_file():
-            self.pyb.fs_put(str(filename), str(dest))
+            self.transport.fs_put(str(filename), str(dest))
         elif not dest.exists():
             self.mkdir(str(dest))
         if "t" in opts and self.board_has_utime:

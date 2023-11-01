@@ -15,8 +15,7 @@ import mpremote.main
 from mpremote import repl as mpremote_repl
 from mpremote.console import ConsolePosix, ConsoleWindows
 from mpremote.main import State
-from mpremote.pyboard import PyboardError
-from mpremote.pyboardextended import PyboardExtended
+from mpremote.transport_serial import SerialTransport, TransportError
 from serial import Serial
 
 from .board import Board
@@ -25,17 +24,18 @@ from .remote_commands import RemoteCmd
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
 
-def hard_reset(pyb: PyboardExtended) -> None:
+def hard_reset(state: State) -> None:
     "Toggle DTR on the serial port to force a hardware reset of the board."
-    while hasattr(pyb.serial, "orig_serial"):
-        pyb.serial = pyb.serial.orig_serial
-    if isinstance(pyb.serial, Serial):
-        serial = pyb.serial
+    transport: SerialTransport = state.transport  # type: ignore
+    while hasattr(transport.serial, "orig_serial"):
+        transport.serial = transport.serial.orig_serial  # type: ignore
+    if isinstance(transport.serial, Serial):
+        serial = transport.serial
         if hasattr(serial, "dtr"):
             serial.dtr = not serial.dtr
             time.sleep(0.1)
             serial.dtr = not serial.dtr
-        pyb.mounted = False
+        transport.mounted = False
 
 
 def cursor_column(console_in: ConsolePosix | ConsoleWindows, writer: Writer) -> int:
@@ -71,47 +71,46 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
     console_in: ConsolePosix | ConsoleWindows,
     console_out_write: Writer,
     *,
+    escape_non_printable: bool,
     code_to_inject: bytes,
     file_to_inject: str,
 ) -> None:
     'An overload function for the main repl loop in "mpremote".'
 
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
-    pyb: PyboardExtended = state.pyb  # type: ignore
-    remote = RemoteCmd(Board(pyb, console_out_write))
     prompt = b"\n>>> "
+    transport: SerialTransport = state.transport  # type: ignore
+    remote = RemoteCmd(Board(transport, console_out_write))
 
     while True:
-        console_in.waitchar(pyb.serial)
+        console_in.waitchar(transport.serial)
         c = console_in.readchar()
         if c:
             if c in (b"\x1d", b"\x18"):  # ctrl-] or ctrl-x, quit
                 break
             elif c == b"\x04":  # ctrl-D
                 # do a soft reset and reload the filesystem hook
-                pyb.write_ctrl_d(console_out_write)
+                transport.write_ctrl_d(console_out_write)
                 beginning_of_line = True
                 remote.reset()
             elif c == b"\x12":  # ctrl-R
                 # Toggle DTR (hard reset) and reload the filesystem hook
-                hard_reset(pyb)
+                hard_reset(state)
                 beginning_of_line = True
                 remote.reset()
             elif c == b"\x0a" and code_to_inject is not None:
-                pyb.serial.write(code_to_inject)  # ctrl-j, inject code
+                transport.serial.write(code_to_inject)  # ctrl-j, inject code
             elif c == b"\x0b" and file_to_inject is not None:
-                console_out_write(  # ctrl-k, inject script
-                    bytes("Injecting %s\r\n" % file_to_inject, "utf8")
-                )
-                pyb.enter_raw_repl(soft_reset=False)
+                console_out_write(bytes("Injecting %s\r\n" % file_to_inject, "utf8"))
+                transport.enter_raw_repl(soft_reset=False)
                 with open(file_to_inject, "rb") as f:
                     pyfile = f.read()
                 try:
-                    pyb.exec_raw_no_follow(pyfile)
-                except PyboardError as er:
+                    transport.exec_raw_no_follow(pyfile)
+                except TransportError as er:
                     console_out_write(b"Error:\r\n")
-                    console_out_write(repr(er).encode("utf-8"))
-                pyb.exit_raw_repl()
+                    console_out_write(repr(er).encode())
+                transport.exit_raw_repl()
                 beginning_of_line = True
             elif (
                 c in b"%!"
@@ -128,43 +127,48 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
                 finally:
                     console_in.enter()
                 if c == b"!":
-                    pyb.serial.write(b"\x0d")  # Force another prompt
+                    transport.serial.write(b"\x0d")  # Force another prompt
                 beginning_of_line = True
             elif c == b"\x0d":  # ctrl-m: carriage return
-                pyb.serial.write(c)
+                transport.serial.write(c)
                 beginning_of_line = True
             else:
-                pyb.serial.write(c)
+                transport.serial.write(c)
                 beginning_of_line = False
 
         n = 0
         try:
-            n = pyb.serial.inWaiting()
+            n = transport.serial.inWaiting()  # type: ignore
         except OSError as er:
             if er.args[0] == 5:  # IO error, device disappeared
                 print("device disconnected")
                 break
 
         if n > 0:
-            c = pyb.serial.read(1)
-            if c is not None:
-                # pass character through to the console
-                oc = ord(c)
-                if oc in (8, 9, 10, 13, 27) or 32 <= oc <= 126:
-                    console_out_write(c)
+            dev_data_in = transport.serial.read(n)
+            if dev_data_in is not None:
+                if escape_non_printable:
+                    # Pass data through to the console, with escaping of non-printables.
+                    console_data_out = bytearray()
+                    for c in dev_data_in:
+                        if c in (8, 9, 10, 13, 27) or 32 <= c <= 126:
+                            console_data_out.append(c)
+                        else:
+                            console_data_out.extend(b"[%02x]" % c)
                 else:
-                    console_out_write(b"[%02x]" % ord(c))
-
-                # Set at_prompt=True if we see the prompt string
-                # Stays set till the next newline char
-                if oc == prompt[prompt_char_count]:
-                    at_prompt = False  # Reset at_prompt after '\n'
-                    prompt_char_count += 1
-                    if prompt_char_count == len(prompt):
+                    console_data_out = dev_data_in
+                console_out_write(console_data_out)
+                for c in dev_data_in:
+                    # Set at_prompt=True if we see the prompt string
+                    # Stays set till the next newline char
+                    if c == prompt[prompt_char_count]:
+                        at_prompt = False  # Reset at_prompt after '\n'
+                        prompt_char_count += 1
+                        if prompt_char_count == len(prompt):
+                            prompt_char_count = 0
+                            at_prompt = True
+                    else:
                         prompt_char_count = 0
-                        at_prompt = True
-                else:
-                    prompt_char_count = 0
 
 
 # Override the mpremote main repl loop!!!
