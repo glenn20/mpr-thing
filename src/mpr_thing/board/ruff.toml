@@ -1,0 +1,2 @@
+[lint]
+ignore = ["xxmultiple-statements-on-one-line-colon"]

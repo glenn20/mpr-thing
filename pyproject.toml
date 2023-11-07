@@ -29,3 +29,7 @@ packages = ["src/mpr_thing"]
 
 [tool.ruff]
 target-version = "py37"
+
+[tool.ruff.lint]
+# 1. Enable flake8-bugbear (`B`) rules, in addition to the defaults.
+select = ["E4", "E7", "E9", "F", "B"]

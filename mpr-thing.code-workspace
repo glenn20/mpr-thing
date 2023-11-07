@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "src/mpr_thing/board"
+		}
+	],
+	"settings": {
+		"files.autoSave": "afterDelay",
+	}
+}

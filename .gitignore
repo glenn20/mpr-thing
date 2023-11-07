@@ -1,7 +1,5 @@
 .vscode
 *.mpy
-*.code-workspace
-/play
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
