@@ -105,11 +105,11 @@ class AnsiColour:
         return self.bold(spec, bold)
 
     # Return a colour decorated filename
-    def file(self, file: str, dir: bool = False, reset: str = "0") -> str:
+    def file(self, file: str, directory: bool = False, reset: str = "0") -> str:
         """Return "file" colourised according to the colour "ls" command."""
         return (
             self.colourise(self.pick(file), file, reset=reset)
-            if not dir
+            if not directory
             else self.dir(file, reset=reset)
         )
 

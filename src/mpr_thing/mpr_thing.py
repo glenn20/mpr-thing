@@ -2,9 +2,6 @@
 
 # MIT License: Copyright (c) 2021 @glenn20
 
-# vscode-fold=1
-
-
 import locale
 import re
 import select
@@ -47,7 +44,7 @@ def cursor_column(console_in: ConsolePosix | ConsoleWindows, writer: Writer) -> 
             select.select([console_in.infd], [], [], 0.1)
         else:
             # TODO: Windows terminal code is untested - I hope it works...
-            for i in range(10):  # Don't wait forever - just in case
+            for _ in range(10):  # Don't wait forever - just in case
                 if console_in.inWaiting():
                     break
                 time.sleep(0.01)
@@ -101,7 +98,7 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
             elif c == b"\x0a" and code_to_inject is not None:
                 transport.serial.write(code_to_inject)  # ctrl-j, inject code
             elif c == b"\x0b" and file_to_inject is not None:
-                console_out_write(bytes("Injecting %s\r\n" % file_to_inject, "utf8"))
+                console_out_write(bytes(f"Injecting {file_to_inject}\r\n", "utf8"))
                 transport.enter_raw_repl(soft_reset=False)
                 with open(file_to_inject, "rb") as f:
                     pyfile = f.read()

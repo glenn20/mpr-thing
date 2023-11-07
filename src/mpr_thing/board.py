@@ -29,10 +29,10 @@ Filenames = Iterable[str]  # Accept single filenames as file list
 RemoteFilelist = Iterable[tuple[str, Iterable[RemotePath]]]
 
 CODE_COMPRESS_RULES: list[tuple[bytes, bytes, dict[str, int]]] = [
-    (b" *#.*$", b"", {"flags": re.MULTILINE}),
-    (b"    ", b" ", {}),
-    (rb"([,;])  *", rb"\1", {}),
-    (rb"  *([=+-])  *", rb"\1", {}),
+    (b" *#.*$", b"", {"flags": re.MULTILINE}),  # Delete comments
+    (b"    ", b" ", {}),  # Replace 4 spaces with 1
+    (rb"([,;])  *", rb"\1", {}),  # Remove spaces after , and ;
+    (rb"  *([=+-])  *", rb"\1", {}),  # Remove spaces around =, + and -
 ]
 
 
@@ -65,7 +65,7 @@ class RemoteFolder:
 # A collection of helper functions for file listings and filename completion
 # to be uploaded to the micropython board and processed on the local host.
 class Board:
-    """A wrapper for the PyboardExtended class from the mpremote tool.
+    """A wrapper for the transport classes from the mpremote tool.
     Provides convenience methods and wrappers for filesystem operations
     on a micropython board.
     """
@@ -79,7 +79,6 @@ class Board:
         """
         self.transport: SerialTransport = transport  # type: ignore
         self.writer = writer
-        self.default_depth = 40  # Max recursion depth for cp(), rm()
         self.debug: Debug = Debug.NONE
         self.board_has_utime: bool = False  # See PR#9644
         self.helper_loaded = False
@@ -168,10 +167,10 @@ class Board:
             self.transport.fs_touch(filename)
 
     def cd(self, filename: str) -> None:
-        self.exec(f"import os; os.chdir({filename!r})")
+        self.exec(f"os.chdir({filename!r})")
 
     def pwd(self) -> str:
-        pwd: str = self.eval_json('print("\\"{}\\"".format(uos.getcwd()))')
+        pwd: str = self.eval_json('print("\\"{}\\"".format(os.getcwd()))')
         return pwd
 
     def mkdir(self, filename: str) -> None:
@@ -193,7 +192,7 @@ class Board:
     def umount(self) -> None:
         'Unmount any Virtual Filesystem mounted at "/remote" on the board.'
         # Must chdir before umount or bad things happen.
-        self.exec('uos.getcwd().startswith("/remote") and uos.chdir("/")')
+        self.exec('os.getcwd().startswith("/remote") and os.chdir("/")')
         with self.raw_repl():
             self.transport.umount_local()
 
@@ -217,7 +216,7 @@ class Board:
         opts = f"{'R' in opts},{'l' in opts}"
         listing = self.eval_json(f"_helper.ls_dirs({list(dir_list)},{opts})")
         listing.sort(key=lambda d: d[0])  # Sort by directory pathname
-        for dirname, file_list in listing:
+        for dirname, file_list in listing:  # todo: use typing with tuple.
             # sort each directory listing by filename
             file_list.sort(key=lambda f: f[0])
         remotefiles = (  # Convert to lists of RemotePath objects
@@ -226,14 +225,14 @@ class Board:
         )
         return remotefiles
 
-    def ls_dir(self, dir: str) -> Iterable[RemotePath]:
-        dir_files = next(iter(self.ls_dirs([dir])))
+    def ls_dir(self, directory: str) -> Iterable[RemotePath]:
+        dir_files = next(iter(self.ls_dirs([directory])))
         return dir_files[1] if dir_files else []
 
     def ls(self, filenames: Filenames, opts: str) -> RemoteFilelist:
         "Return a list of files on the board."
         filenames = list(filenames)
-        filenames.sort
+        filenames.sort()
         filelist = list(self.ls_files(filenames))  # We parse this several times
         missing = (f for f in filelist if not f.exists())
         files = (f for f in filelist if f.is_file())
@@ -286,7 +285,7 @@ class Board:
             if not dest_f.exists() or f.is_file():
                 if "v" in opts:
                     print(f"{str(f)} -> {str(dest)}")
-                self.exec(f"uos.rename({str(f)!r},{dest!r})")
+                self.exec(f"os.rename({str(f)!r},{dest!r})")
             else:
                 print(f"%mv: Error: Destination must be directory: {dest!r}")
             return
@@ -296,7 +295,7 @@ class Board:
             f2 = dest_f / f.name
             if "v" in opts:
                 print(f"{str(f)} -> {str(f2)}")
-            self.exec(f"uos.rename({str(f)!r},{str(f2)!r})")
+            self.exec(f"os.rename({str(f)!r},{str(f2)!r})")
 
     def cp(self, filenames: Filenames, dest: str, opts: str) -> None:
         "Copy files and directories on the micropython board."
@@ -344,12 +343,12 @@ class Board:
                 self.transport.fs_get(str(filename), str(dest))
 
     def get_dir(
-        self, dir: PathLike, dest: PathLike, verbose: bool, dry_run: bool
+        self, directory: PathLike, dest: PathLike, verbose: bool, dry_run: bool
     ) -> None:
         "Recursively copy a directory from the micropython board."
         # dir is subdirectory name for recursive
         base: Optional[Path] = None
-        for subdir, filelist in self.ls([str(dir)], "-R"):
+        for subdir, filelist in self.ls([str(directory)], "-R"):
             srcdir = Path(subdir)
             # First non-empty subdir is base of a recursive listing
             if subdir and base is None:
@@ -423,7 +422,7 @@ class Board:
         'Copy a local file "filename" to the "dest" folder on the board.'
         if filename.is_dir() and dest.is_file():
             raise OSError(f"Can not copy local dir to remote file {dest.as_posix()}")
-        elif filename.is_file() and dest.is_dir():
+        if filename.is_file() and dest.is_dir():
             raise OSError(f"Can not copy local file to remote dir {dest.as_posix()}")
 
         mtime: int = 0
@@ -441,15 +440,15 @@ class Board:
             self.mkdir(str(dest))
         if "t" in opts and self.board_has_utime:
             # Requires micropython PR#9644
-            self.exec(f"uos.utime({str(dest)!r},(0,{mtime - RemotePath.epoch_offset}))")
+            self.exec(f"os.utime({str(dest)!r},(0,{mtime - RemotePath.epoch_offset}))")
 
-    def put_dir(self, dir: Path, dest: RemotePath, opts: str = "") -> None:
+    def put_dir(self, directory: Path, dest: RemotePath, opts: str = "") -> None:
         "Recursively copy a directory to the micropython board."
-        base = dir.parent
+        base = directory.parent
         # Destination subdir is dest + basename of file
-        destdir = dest / dir.name
+        destdir = dest / directory.name
 
-        for subdirname, _, files in os.walk(dir):
+        for subdirname, _, files in os.walk(directory):
             subdir = Path(subdirname)
             # Dest subdir is dest + relative path from dir to base
             destdir = dest / subdir.relative_to(base)
@@ -512,9 +511,9 @@ class Board:
 
     def df(self, dirs: Filenames) -> Sequence[tuple[str, int, int, int]]:
         ret: list[tuple[str, int, int, int]] = []
-        for dir in dirs or ["/"]:
-            _, bsz, tot, free, *_ = self.eval_json(f'print(list(uos.statvfs("{dir}")))')
-            ret.append((dir, tot * bsz, (tot - free) * bsz, free * bsz))
+        for d in dirs or ["/"]:
+            _, bsz, tot, free, *_ = self.eval_json(f'print(list(os.statvfs("{d}")))')
+            ret.append((d, tot * bsz, (tot - free) * bsz, free * bsz))
         return ret
 
     def gc(self) -> tuple[int, int]:

@@ -10,10 +10,11 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
+import time
 
 from .base_commands import Argslist, BaseCommands
-from .board import Board
 
 
 # The commands we support at the remote command prompt.
@@ -21,9 +22,6 @@ from .board import Board
 # initialisation and utility methods and overrides for cmd.Cmd class.
 class RemoteCmd(BaseCommands):
     "A class to run commands on the micropython board."
-
-    def __init__(self, board: Board):
-        super().__init__(board)
 
     @staticmethod
     def _options(args: Argslist) -> tuple[str, Argslist]:
@@ -67,10 +65,10 @@ class RemoteCmd(BaseCommands):
         filelist = list(self.board.ls(args, opts))
         linebreak = ""
         first_time = True
-        for dir, files in filelist:
+        for directory, files in filelist:
             if not first_time and len(filelist) > 2:  # Print the directory name
-                print(f"{linebreak}{self.colour.dir(dir)}")
-            if dir or files:
+                print(f"{linebreak}{self.colour.dir(directory)}")
+            if directory or files:
                 self.print_files(files, opts)
                 linebreak = "\n"
             first_time = False
@@ -88,8 +86,6 @@ class RemoteCmd(BaseCommands):
             %edit file1 [file2 ...]
         """
         for arg in args:
-            import tempfile
-
             with tempfile.TemporaryDirectory() as tmpdir:
                 basename = Path(arg).name
                 dest = Path(tmpdir) / basename
@@ -252,7 +248,7 @@ class RemoteCmd(BaseCommands):
             %run file1.py [file2.py ...]"""
         for arg in args:
             try:
-                with open(arg) as f:
+                with open(arg, encoding="utf-8") as f:
                     buf = f.read()
             except OSError as err:
                 print(OSError, err)
@@ -292,9 +288,7 @@ class RemoteCmd(BaseCommands):
             %time set utc   : Set the RTC clock on the board from UTC time
             %time           : Print the RTC clock time on the board"""
         if args and args[0] == "set":
-            from time import gmtime, localtime
-
-            t = gmtime() if "utc" in args else localtime()
+            t = time.gmtime() if "utc" in args else time.localtime()
             rtc_cmds = {
                 "esp8266": "from machine import RTC;RTC().datetime({})",
                 "pyb": "from pyb import RTC;RTC().datetime({})",
@@ -319,9 +313,8 @@ class RemoteCmd(BaseCommands):
                     )
                 )
             )
-        from time import asctime
 
-        print(asctime(self.board.get_time()))
+        print(time.asctime(self.board.get_time()))
 
     def do_mount(self, args: Argslist) -> None:
         """
@@ -333,7 +326,7 @@ class RemoteCmd(BaseCommands):
         path = args[0] if args else "."
         self.board.mount(path, opts)
         print(f"Mounted local folder {args} on /remote")
-        self.board.exec("print(uos.getcwd())")
+        self.board.exec("print(os.getcwd())")
 
     def do_umount(self, args: Argslist) -> None:
         """
@@ -342,7 +335,7 @@ class RemoteCmd(BaseCommands):
         if args:
             print("umount: unexpected args:", args)
         self.board.umount()
-        self.board.exec("print(uos.getcwd())")
+        self.board.exec("print(os.getcwd())")
 
     def do_free(self, args: Argslist) -> None:
         """
@@ -357,16 +350,12 @@ class RemoteCmd(BaseCommands):
             %df [dir1, dir2, ...]"""
         df_list = self.board.df(args)
         print(
-            "{:10} {:>9} {:>9} {:>9} {:>3}% {}".format(
-                "", "Bytes", "Used", "Available", "Use", "Mounted on"
-            )
+            f"{'':10} {'Bytes':>9} {'Used':>9} "
+            f"{'Available':>9} {'Use':>3}% {'Mounted on'}"
         )
         for name, total, used, free in df_list:
-            print(
-                "{:10} {:9d} {:9d} {:9d} {:3d}% {}".format(
-                    name, total, used, free, round(100 * used / total), name
-                )
-            )
+            pc = round(100 * used / total)
+            print(f"{name:10} {total:9d} {used:9d} {free:9d} {pc:3d}% {name}")
 
     def do_gc(self, args: Argslist) -> None:
         """

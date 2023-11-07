@@ -19,6 +19,7 @@ import re
 import readline
 import shlex
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from traceback import print_exc
@@ -79,7 +80,7 @@ class BaseCommands(cmd.Cmd):
         self.colour = AnsiColour()
         self.prompt = self.base_prompt
         self.prompt_fmt = (
-            "{bold-cyan}{id} {yellow}{platform}" " ({free}){bold-blue}{pwd}> "
+            "{bold-cyan}{id} {yellow}{platform} ({free}){bold-blue}{pwd}> "
         )
         self.prompt_colour = "cyan"  # Colour of the short prompt
         self.shell_colour = "magenta"  # Colour of the short prompt
@@ -110,14 +111,14 @@ class BaseCommands(cmd.Cmd):
             try:
                 # Load and close file before processing as cmds may force
                 # re-write of file (eg. ~/.mpr-thing.options)
-                with open(rcfile, "r") as f:
+                with open(rcfile, "r", encoding="utf-8") as f:
                     lines = list(f)
             except OSError:
                 pass
             for i, line in enumerate(lines):
                 try:
                     self.onecmd(line)
-                except Exception as err:
+                except Exception as err:  # pylint: disable=broad-except
                     print(f"Error loading {rcfile} on line {i + 1}: {line.strip()}")
                     print(f"  {type(err).__name__}: {err}")
             return True
@@ -158,10 +159,8 @@ class BaseCommands(cmd.Cmd):
                 'print("{!r}".format(unique_id().hex(":")))'
             )
         with catcher():
-            self.params.update(  # Update the board params from uos.uname()
-                self.board.eval_json(
-                    'print(repr(eval("dict{!r}".format(uos.uname()))))'
-                )
+            self.params.update(  # Update the board params from os.uname()
+                self.board.eval_json('print(repr(eval(f"dict{os.uname()!r}")))')
             )
         self.params["id"] = self.params["unique_id"][-8:]  # Last 3 octets
         # Add the ansi colour names
@@ -179,7 +178,7 @@ class BaseCommands(cmd.Cmd):
         self.load_board_params()
         pwd, alloc, free = self.board.eval_json("_helper.pr()")
 
-        free_pc = round(100 * free / (alloc + free)) if alloc > 0 else 0
+        free_pc = round(100 * free / (alloc + free), None) if alloc > 0 else 0
         free_delta = max(0, self.params.get("free", free) - free)
 
         # Update some dynamic info for the prompt
@@ -234,14 +233,14 @@ class BaseCommands(cmd.Cmd):
                 t = time.strftime("%c", time.localtime(f.mtime)).replace(" 0", "  ")[
                     :-3
                 ]
-                filename = self.colour.file(f.name, dir=f.is_dir())
+                filename = self.colour.file(f.name, directory=f.is_dir())
                 print(f"{size:9d} {t} {filename}")
         else:
             # Short listing style - data is a list of filenames
             if len(files) < 20 and sum(len(f.name) + 2 for f in files) < columns:
                 # Print all on one line
                 for f in files:
-                    print(self.colour.file(f.name, dir=f.is_dir()), end="  ")
+                    print(self.colour.file(f.name, directory=f.is_dir()), end="  ")
                 print("")
             else:
                 # Print in columns - by row
@@ -251,7 +250,7 @@ class BaseCommands(cmd.Cmd):
                 for i, f in enumerate(files):
                     n = i + 1
                     print(
-                        self.colour.file(f.name, dir=f.is_dir()),
+                        self.colour.file(f.name, directory=f.is_dir()),
                         spaces[len(f.name) :],
                         sep="",
                         end=("" if n % cols and n < len(files) else "\n"),
@@ -268,9 +267,6 @@ class BaseCommands(cmd.Cmd):
         if args and len(args) == 2 and args[0] == "cd":
             os.chdir(args[1])
             return
-
-        import tempfile
-
         with tempfile.TemporaryDirectory() as tmpdir:
             names: list[tuple[str, Path]] = []
             new_args: list[str] = []
@@ -284,7 +280,7 @@ class BaseCommands(cmd.Cmd):
                 else:
                     new_args.append(arg)
 
-            os.system(" ".join(new_args))  # TODO: Use interactive shell
+            os.system(" ".join(new_args))
             # for arg, dest in names:
             #     remote.board.put(str(dest), arg)
 
@@ -414,6 +410,7 @@ class BaseCommands(cmd.Cmd):
             if os.path.isfile(OPTIONS_FILE)
             else os.path.expanduser("~/" + OPTIONS_FILE),
             "w",
+            encoding="utf-8",
         ) as f:
             f.write("# Edit with caution: will be overwritten by mpr-thing.\n")
             f.write(f'set prompt="{self.prompt_fmt}"\n')
@@ -454,9 +451,7 @@ class BaseCommands(cmd.Cmd):
             end="",
         )
         self.load_board_params()
-        for i, k in enumerate(
-            k for k in self.params.keys() if not k.startswith("ansi")
-        ):
+        for i, k in enumerate(k for k in self.params if not k.startswith("ansi")):
             print(f"{'{' + k + '}':15}", end="" if (i + 1) % 5 else "\n    ")
         print("and the ansi256 color codes: {ansi0}, {ansi1}, ...{ansi255}")
 
@@ -466,7 +461,7 @@ class BaseCommands(cmd.Cmd):
                 """
         Where:
             {device/dev}: full or short name for the serial device
-            {sysname/nodename/release/version/machine}: set from uos.uname()
+            {sysname/nodename/release/version/machine}: set from os.uname()
             {unique_id/id} from machine.unique_id() (id is last 3 octets)
             {colour/bold-colour}: insert an ANSI colour sequence
             {reset}: pop the colour stack
@@ -504,7 +499,7 @@ class BaseCommands(cmd.Cmd):
         print(f'Unknown command: "{line.strip()}"')
         return not self.multi_cmd_mode
 
-    def do_help(self, args: Argslist) -> None:  # type: ignore
+    def do_help(self, args: Argslist) -> None:  # pylint: disable=arguments-renamed
         'List available commands with "help" or detailed help with "help cmd".'
         # Need to override Cmd.do_help since we abuse the args parameter
         if not args:
@@ -522,7 +517,7 @@ class BaseCommands(cmd.Cmd):
                     return
             except AttributeError:
                 pass
-            self.stdout.write("%s\n" % str(self.nohelp % (arg,)))
+            self.stdout.write(f"{str(self.nohelp % (arg,))}\n")
             return
         func()
 
@@ -558,40 +553,41 @@ class BaseCommands(cmd.Cmd):
         return [pre + k for k in self.params if k.startswith(post)] if sep >= 0 else []
 
     # Command line parsing, splitting and globbing
-    def completedefault(  # type: ignore
-        self, word: str, line: str, begidx: int, endidx: int
-    ) -> Argslist:
+    def completedefault(self, *args: str) -> Argslist:  # type: ignore
         'Perform filename completion on "word".'
-        cmd = line.split()[0].lstrip("%")
+        word, line, *_ = args
+        command = line.split()[0].lstrip("%")
         sep = word.rfind("/")
         if self.shell_mode:
-            cmd = "shell"
+            command = "shell"
         # pre is the directory portion, post is the incomplete filename
         pre, post = word[: sep + 1], word[sep + 1 :]
-        if cmd in ("set", "echo"):
+        if command in ("set", "echo"):
             # Complete on board params, eg: set prompt="{de[TAB]
             return self.complete_params(word)
-        elif cmd in self.noglob_cmds:
+        elif command in self.noglob_cmds:
             # No filename completion for this command
             return []
-        elif cmd in self.remote_cmds:
+        elif command in self.remote_cmds:
             # Execute filename completion on the board.
             files = self.complete_remote(pre, post)
         else:
             files = self.complete_local(pre, post)
 
         # Return all filenames or only directories if requested
-        return [f for f in files if f.endswith("/")] if cmd in self.dir_cmds else files
+        return (
+            [f for f in files if f.endswith("/")] if command in self.dir_cmds else files
+        )
 
     def glob_remote(self, word: str) -> Iterable[str]:
         'Expand glob patterns in the filename part of "path".'
         if "*" not in word and "?" not in word:
             return []
         sep = word.rfind("/")
-        dir, word = word[: sep + 1] or ".", word[sep + 1 :]
-        files = self.board.ls_dir(dir) or []
+        dir1, word = word[: sep + 1] or ".", word[sep + 1 :]
+        files = self.board.ls_dir(dir1) or []
         return (  # Just return the generator
-            ("" if dir == "." else dir) + str(f)
+            ("" if dir1 == "." else dir1) + str(f)
             for f in files
             if str(f)[0] != "." and fnmatch.fnmatch(str(f), word)
         )
@@ -647,8 +643,8 @@ class BaseCommands(cmd.Cmd):
             if not args or ";" not in args:
                 return args
             argslist = (  # [[arg1, ...], [arg1,...], ...]
-                list(l)
-                for key, l in itertools.groupby(args, lambda arg: arg == ";")
+                list(words)
+                for key, words in itertools.groupby(args, lambda arg: arg == ";")
                 if not key
             )
             # Get args for the first subcommand
@@ -688,23 +684,23 @@ class BaseCommands(cmd.Cmd):
             # A command line read from the input
             if self.shell_mode:
                 line = "shell " + line
-            cmd, arg, line = self.parseline(line)
+            command, _, line = self.parseline(line)
             if not line:
                 return self.emptyline()
-            if not cmd:
+            if not command:
                 return self.default(line)
 
             # Split the command line into a list of args
             args = list(self.split(line))
 
         args = self.process_args(args)  # Expand aliases, macros and globs
-        cmd, *args = args or [""]
+        command, *args = args or [""]
         self.lastcmd = ""
-        func = getattr(self, "do_" + cmd, None)
+        func = getattr(self, "do_" + command, None)
         if func:
             ret: bool = func(args)
         else:
-            ret = self.default(" ".join([cmd, *args]))
+            ret = self.default(" ".join([command, *args]))
         return ret
 
     def postcmd(self, stop: Any, line: str) -> bool:
@@ -729,7 +725,7 @@ class BaseCommands(cmd.Cmd):
                     print(
                         self.base_prompt, end="", flush=True
                     )  # Re-print the micropython prompt
-            except Exception as err:
+            except Exception as err:  # pylint: disable=broad-except
                 print("Error in command:", err)
                 print(f"{err.args}")
                 print_exc()

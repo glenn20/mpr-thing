@@ -9,46 +9,40 @@ handing exceptions.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from traceback import print_exc
 from typing import Any, Callable, Generator
 
 from mpremote.transport_serial import SerialTransport, TransportError
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
-nested_depth = 0
-
-
-class CatcherException(Exception):
-    pass
-
 
 # A context manager to catch exceptions from pyboard and others
-@contextmanager
-def catcher() -> Generator[None, None, None]:
+class catcher:
     """Catch and report exceptions commonly raised by the mpr-thing tool.
     Eg.
         from catcher import catcher
         with catcher():
             id = board.eval("print(unique_id())")"""
-    global nested_depth
 
-    try:
-        nested_depth += 1
-        yield
+    nested_depth = 0
 
-    except KeyboardInterrupt:
-        print("Keyboard Interrupt.")
-        if nested_depth > 1:
-            raise  # Unwind to the outermost catcher
-    except (OSError, FileNotFoundError) as exc:
-        print(f"{exc.__class__.__name__}: {exc}")
-    except Exception as exc:
-        print("Error:: ", end="")
-        print(f"{exc.args}")
-        print_exc()
-    finally:
-        nested_depth -= 1
+    def __enter__(self):
+        catcher.nested_depth += 1
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
+        catcher.nested_depth -= 1
+        if exc_type is KeyboardInterrupt:
+            print("Keyboard Interrupt.")
+            if catcher.nested_depth > 0:
+                return False  # Propagate the exception
+        if exc_type in (OSError, FileNotFoundError):
+            print(f"{exc_type.__name__}: {exc_value}")
+        elif exc_type is Exception:
+            print("Error:: ", end="")
+            print(f"{exc_type.__name__}: {exc_value}")
+            print(traceback)
+        return True
 
 
 # A context manager for the raw_repl - not re-entrant
@@ -81,7 +75,7 @@ def raw_repl(
         transport.serial.write(b"\r\x03\x03")
         raise
     except TransportError as exc:
-        write_fn("TransportError: {!r}\r\n".format(message).encode())
+        write_fn(f"TransportError: {message!r}\r\n".encode())
         if len(exc.args) == 3:  # Raised by Pyboard.exec_()
             write_fn(exc.args[1])
             write_fn(exc.args[2])

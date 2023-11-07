@@ -18,14 +18,14 @@ class RemotePath(PurePosixPath):
 
     epoch_offset: int = 0
 
-    def __init__(self, *args: str) -> None:
+    def __init__(self, *_args: str) -> None:
         # Note: Path initialises from *args in __new__()!!!
         self.mode = 0
         self.size = 0
         self.mtime = 0
         self._exists = False
 
-    def set_modes(self, stat: Sequence[int]) -> RemotePath:
+    def set_modes(self, modes: Sequence[int]) -> RemotePath:
         """Set the file mode, size and mtime values.
 
         Args:
@@ -35,10 +35,10 @@ class RemotePath(PurePosixPath):
         Returns:
             RemotePath: [description]
         """
-        self.mode = stat[0] if stat else 0
-        self.size = stat[1] if stat[1:] else -1
-        self.mtime = stat[2] + self.epoch_offset if stat[2:] else -1
-        self._exists = bool(stat)
+        self.mode = modes[0] if modes else 0
+        self.size = modes[1] if modes[1:] else -1
+        self.mtime = modes[2] + self.epoch_offset if modes[2:] else -1
+        self._exists = bool(modes)
         return self  # So we can f = RemotePath('/main.py').set_modes(...)
 
     def modes(self) -> tuple[int, int, int]:
