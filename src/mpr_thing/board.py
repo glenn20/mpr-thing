@@ -98,14 +98,17 @@ class Board:
         for a, b, flags in CODE_COMPRESS_RULES:
             code = re.sub(a, b, code, **flags)
         self.exec(code)
-        tt = time.gmtime(time.time())  # Use now as a reference time
-        localtm = time.mktime(tt)
-        remotetm: int = self.eval_json(f"import utime;print(utime.mktime({tt[:8]}))")
-        RemotePath.epoch_offset = round(localtm - remotetm)
+        self.check_time_offset()
         self.board_has_utime = bool(
             self.eval_json("print(int('utime' in os.__dict__))")
         )
         self.helper_loaded = True
+
+    def check_time_offset(self) -> None:
+        tt = time.gmtime(time.time())  # Use now as a reference time
+        localtm = time.mktime((*tt[:8], -1))  # let python sort out dst
+        remotetm: int = self.eval_json(f"import time;print(time.mktime({tt[:8]}))")
+        RemotePath.epoch_offset = round(localtm - remotetm)
 
     def device_name(self) -> str:
         "Get the name of the serial port connected to the micropython board."

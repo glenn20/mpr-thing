@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import os
 import tempfile
-from pathlib import Path
 import time
+from pathlib import Path
 
 from .base_commands import Argslist, BaseCommands
 
@@ -313,6 +313,7 @@ class RemoteCmd(BaseCommands):
                     )
                 )
             )
+            self.board.check_time_offset()
 
         print(time.asctime(self.board.get_time()))
 
