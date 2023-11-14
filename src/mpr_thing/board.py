@@ -43,23 +43,13 @@ class Debug(IntFlag):
 
 
 class RemoteFolder:
-    def __init__(
-        self,
-        ls: RemoteFilelist,
-    ) -> None:
-        self.ls = {
-            d.rstrip("/")
-            if d != "/"
-            else d: (
-                RemotePath(d).set_modes([stat.S_IFDIR]),
-                {f.as_posix(): f for f in files},
-            )
-            for d, files in ((str(di), list(files)) for di, files in ls)
-        }
+    def __init__(self, ls: RemoteFilelist) -> None:
+        self.ls = {str(f): f for _, files in ls for f in files}
 
-    def files(self, f: PathLike) -> tuple[RemotePath, dict[str, RemotePath]]:
-        x = self.ls.get(str(f), None)
-        return x or (RemotePath(str(f)), {})
+    def __getitem__(self, file: str | RemotePath) -> RemotePath:
+        return self.ls.get(str(file)) or (
+            file if isinstance(file, RemotePath) else RemotePath(file)
+        )
 
 
 # A collection of helper functions for file listings and filename completion
@@ -423,6 +413,8 @@ class Board:
 
     def put_file(self, filename: Path, dest: RemotePath, opts: str = "") -> None:
         'Copy a local file "filename" to the "dest" folder on the board.'
+        if not filename.exists():
+            raise FileNotFoundError(f"Local file does not exist: '{filename}'")
         if filename.is_dir() and dest.is_file():
             raise OSError(f"Can not copy local dir to remote file {dest.as_posix()}")
         if filename.is_file() and dest.is_dir():
@@ -439,7 +431,7 @@ class Board:
             return
         if filename.is_file():
             self.transport.fs_put(str(filename), str(dest))
-        elif not dest.exists():
+        elif filename.is_dir() and not dest.exists():
             self.mkdir(str(dest))
         if "t" in opts and self.board_has_utime:
             # Requires micropython PR#9644
@@ -493,23 +485,16 @@ class Board:
         with self.raw_repl():
             localfile = Path(src)
             destpath = RemotePath(dest) / localfile.name
-            remotefile = list(self.ls_files([destpath.as_posix()]))[0]
+            remotefile = self.remotefile(destpath)
             self.put_file(localfile, remotefile, opts)
             if localfile.is_file():
                 return
-            remote = RemoteFolder(self.ls([destpath.as_posix()], "-lR"))
-            destdir, _ = remote.files(destpath)
-            for localsubdir, localdirs, localfiles in (
-                (Path(d), s, f) for d, s, f in os.walk(localfile)
-            ):
-                # Dest subdir is dest + relative path of local from localbase
-                localfiles.extend(localdirs)
-                destsubdir = destdir / localsubdir.relative_to(localfile)
-                remotedir, remotefiles = remote.files(destsubdir)
-                for f in localfiles:
-                    f1 = localsubdir / f
-                    fr = remotefiles.get(f, RemotePath(f))
-                    f2 = RemotePath(str(remotedir / fr)).set_modes(fr.modes())
+            remote = RemoteFolder(self.ls([str(destpath)], "-lR"))
+            for subdir, dirs, files in os.walk(localfile):
+                localsubdir = Path(subdir)
+                remotesubdir = remotefile / localsubdir.relative_to(localfile)
+                for f in itertools.chain(files, dirs):
+                    f1, f2 = localsubdir / f, remote[remotesubdir / f]
                     self.put_file(f1, f2, opts)
 
     def df(self, dirs: Filenames) -> Sequence[tuple[str, int, int, int]]:
