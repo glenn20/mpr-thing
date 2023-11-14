@@ -26,15 +26,7 @@ class RemotePath(PurePosixPath):
         self._exists = False
 
     def set_modes(self, modes: Sequence[int]) -> RemotePath:
-        """Set the file mode, size and mtime values.
-
-        Args:
-            stat: A tuple of ints: (mode, size, mtime)
-            exists=True: Flag if the file exists (or not).
-
-        Returns:
-            RemotePath: [description]
-        """
+        """Set the file mode, size and mtime values."""
         self.mode = modes[0] if modes else 0
         self.size = modes[1] if modes[1:] else -1
         self.mtime = modes[2] + self.epoch_offset if modes[2:] else -1
@@ -73,3 +65,6 @@ class RemotePath(PurePosixPath):
 
     def __repr__(self) -> str:
         return f"RemotePath({self.name!r}, {[self.mode, self.size, self.mtime]})"
+
+    def __str__(self) -> str:  # Force posix representation for files on the board
+        return self.as_posix()

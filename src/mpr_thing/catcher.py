@@ -54,7 +54,7 @@ def raw_repl(
     soft_reset: bool = False,
 ) -> Generator[None, None, None]:
     """Enter the raw_repl on the micropython board and trap and report
-    any PyboardError exceptions raised.
+    any TransportError exceptions raised.
 
     Eg:
         from catcher import raw_repl

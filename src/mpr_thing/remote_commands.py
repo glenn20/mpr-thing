@@ -288,33 +288,21 @@ class RemoteCmd(BaseCommands):
             %time set utc   : Set the RTC clock on the board from UTC time
             %time           : Print the RTC clock time on the board"""
         if args and args[0] == "set":
-            t = time.gmtime() if "utc" in args else time.localtime()
             rtc_cmds = {
                 "esp8266": "from machine import RTC;RTC().datetime({})",
                 "pyb": "from pyb import RTC;RTC().datetime({})",
                 "pycom": "from machine import RTC;_t={};"
                 "RTC().init((_t[i] for i in [0,1,2,4,5,6]))",
             }
+            default = "from machine import RTC;RTC().init({})"
             self.load_board_params()
-            fmt = rtc_cmds.get(
-                self.params["sysname"], "from machine import RTC;RTC().init({})"
+            fmt = rtc_cmds.get(self.params["sysname"], default)
+            t = time.gmtime() if "utc" in args else time.localtime()
+            cmd = fmt.format(
+                (t.tm_year, t.tm_mon, t.tm_mday, 0, t.tm_hour, t.tm_min, t.tm_sec, 0)
             )
-            self.board.exec(
-                fmt.format(
-                    (
-                        t.tm_year,
-                        t.tm_mon,
-                        t.tm_mday,
-                        0,
-                        t.tm_hour,
-                        t.tm_min,
-                        t.tm_sec,
-                        0,
-                    )
-                )
-            )
+            self.board.exec(cmd)
             self.board.check_time_offset()
-
         print(time.asctime(self.board.get_time()))
 
     def do_mount(self, args: Argslist) -> None:
