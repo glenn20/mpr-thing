@@ -125,17 +125,16 @@ class BaseCommands(cmd.Cmd):
         return False
 
     def initialise(self) -> None:
+        self.board.load_helper()
         if self.initialised:
             return
         self.initialised = True
         # Load/reload the helper code onto the micropython board.
-        self.board.load_helper()
         self.load_command_file(OPTIONS_FILE)
         self.load_command_file(RC_FILE)
 
     def reset(self) -> None:
-        if self.initialised:
-            self.board.reset()
+        self.board.reset()
 
     def load_board_params(self) -> None:
         "Initialise the board parameters - used in the longform prompt"
@@ -230,11 +229,9 @@ class BaseCommands(cmd.Cmd):
             # Long listing style - data is a list of filenames
             for f in files:
                 size = f.size if not f.is_dir() else 0
-                t = time.strftime("%c", time.localtime(f.mtime)).replace(" 0", "  ")[
-                    :-3
-                ]
+                t = time.strftime("%c", time.localtime(f.mtime)).replace(" 0", "  ")
                 filename = self.colour.file(f.name, directory=f.is_dir())
-                print(f"{size:9d} {t} {filename}")
+                print(f"{size:9d} {t[:-3]} {filename}")
         else:
             # Short listing style - data is a list of filenames
             if len(files) < 20 and sum(len(f.name) + 2 for f in files) < columns:
