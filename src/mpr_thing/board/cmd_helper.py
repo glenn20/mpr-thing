@@ -47,7 +47,7 @@ class _MagicHelper:
                 print(fmt.format(s), end="")
                 fmt = ",{}"
             print("]]")
-            sep = ","
+            sep = ","  # json does not let us use a trailing comma
         print("]")
 
     # Using a fixed buffer reduces heap allocation

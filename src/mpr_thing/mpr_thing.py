@@ -21,9 +21,8 @@ from .remote_commands import RemoteCmd
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
 
-def hard_reset(state: State) -> None:
+def hard_reset(transport: SerialTransport) -> None:
     "Toggle DTR on the serial port to force a hardware reset of the board."
-    transport: SerialTransport = state.transport  # type: ignore
     while hasattr(transport.serial, "orig_serial"):
         transport.serial = transport.serial.orig_serial  # type: ignore
     if isinstance(transport.serial, Serial):
@@ -92,7 +91,7 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
                 remote.reset()
             elif c == b"\x12":  # ctrl-R
                 # Toggle DTR (hard reset) and reload the filesystem hook
-                hard_reset(state)
+                hard_reset(transport)
                 beginning_of_line = True
                 remote.reset()
             elif c == b"\x0a" and code_to_inject is not None:

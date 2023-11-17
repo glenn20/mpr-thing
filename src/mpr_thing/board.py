@@ -11,7 +11,6 @@ import itertools
 import json
 import os
 import re
-import stat
 import time
 from enum import IntFlag
 from pathlib import Path
@@ -25,8 +24,9 @@ from .remote_path import RemotePath
 # Type aliases
 Writer = Callable[[bytes], None]  # Type of the console write functions
 PathLike = str | os.PathLike  # Accepts str or Pathlib for filenames
-Filenames = Iterable[str]  # Accept single filenames as file list
-RemoteFilelist = Iterable[tuple[str, Iterable[RemotePath]]]
+RemoteFilename = str | RemotePath
+RemoteFilenames = Iterable[RemoteFilename]
+RemoteDirlist = Iterable[tuple[str, Iterable[RemotePath]]]
 
 CODE_COMPRESS_RULES: list[tuple[bytes, bytes, dict[str, int]]] = [
     (b" *#.*$", b"", {"flags": re.MULTILINE}),  # Delete comments
@@ -43,13 +43,11 @@ class Debug(IntFlag):
 
 
 class RemoteFolder:
-    def __init__(self, ls: RemoteFilelist) -> None:
+    def __init__(self, ls: RemoteDirlist) -> None:
         self.ls = {str(f): f for _, files in ls for f in files}
 
     def __getitem__(self, file: str | RemotePath) -> RemotePath:
-        return self.ls.get(str(file)) or (
-            file if isinstance(file, RemotePath) else RemotePath(file)
-        )
+        return self.ls.get(str(file)) or RemotePath(str(file))
 
 
 # A collection of helper functions for file listings and filename completion
@@ -122,19 +120,13 @@ class Board:
         if self.debug & Debug.EXEC:
             print(f"Board.exec(): code = {code!r}")
         with self.raw_repl(code):
-            response = (
-                self.transport.exec(code, self.writer if not silent else None)
-                .decode()
-                .strip()
-            )
+            writer = self.writer if not silent else None
+            response = self.transport.exec(code, writer).decode().strip()
         if self.debug & Debug.EXEC:
             print(f"Board.exec(): resp = {response}")
         return response
 
-    def eval_json(
-        self,
-        code: str,
-    ) -> Any:
+    def eval_json(self, code: str) -> Any:
         """Execute code on board and interpret the output as json.
         Single quotes (') in output will be changed to " before processing."""
         response = self.exec(code)
@@ -189,27 +181,29 @@ class Board:
         with self.raw_repl():
             self.transport.umount_local()
 
-    def ls_files(self, filenames: Filenames) -> Iterable[RemotePath]:
+    def ls_files(self, filenames: RemoteFilenames) -> Iterable[RemotePath]:
         "Return a list of files (RemotePath) on board for list of filenames."
         # Board returns: [["f1", s0, s1, s2], ["f2", s0, s1, s2], ...]]
         # Where s0 is mode, s1 is size and s2 is mtime
-        ls = self.eval_json(f"_helper.ls_files({filenames})")
+        ls = self.eval_json(f"_helper.ls_files({[str(f) for f in filenames]})")
         return (RemotePath(f[0]).set_modes(f[1:]) for f in ls)
 
-    def ls_dirs(self, dir_list: Iterable[str], opts: str = "") -> RemoteFilelist:
+    def ls_dirs(self, dir_list: RemoteFilenames, opts: str = "") -> RemoteDirlist:
         """Return a listing of files in directories on the board.
         Takes a list of directory pathnames and a listing options string.
-        Returns a list: [(dirname, [Path1, Path2, Path3..]), ...]
+        Returns an iterable over: [(dirname, [Path1, Path2, Path3..]), ...]
         """
         # From the board: [
         #  ["dir",  [["f1" s0, s1, s2], ["f2", s0..], ..]],
         #  ["dir2", [["f1" s0, s1, s2], ["f2", s0..], ..]], ...
         # ]
-        remotefiles: RemoteFilelist = []
+        remotefiles: RemoteDirlist = []
         opts = f"{'R' in opts},{'l' in opts}"
-        listing = self.eval_json(f"_helper.ls_dirs({list(dir_list)},{opts})")
+        listing = self.eval_json(
+            f"_helper.ls_dirs({[str(d) for d in dir_list]},{opts})"
+        )
         listing.sort(key=lambda d: d[0])  # Sort by directory pathname
-        for dirname, file_list in listing:  # todo: use typing with tuple.
+        for _, file_list in listing:
             # sort each directory listing by filename
             file_list.sort(key=lambda f: f[0])
         remotefiles = (  # Convert to lists of RemotePath objects
@@ -218,14 +212,13 @@ class Board:
         )
         return remotefiles
 
-    def ls_dir(self, directory: str) -> Iterable[RemotePath]:
-        dir_files = next(iter(self.ls_dirs([directory])))
+    def ls_dir(self, directory: RemoteFilename) -> Iterable[RemotePath]:
+        dir_files = next(iter(self.ls_dirs([str(directory)])))
         return dir_files[1] if dir_files else []
 
-    def ls(self, filenames: Filenames, opts: str) -> RemoteFilelist:
+    def ls(self, filenames: RemoteFilenames, opts: str) -> RemoteDirlist:
         "Return a list of files on the board."
-        filenames = list(filenames)
-        filenames.sort()
+        filenames = sorted(filenames)
         filelist = list(self.ls_files(filenames))  # We parse this several times
         missing = (f for f in filelist if not f.exists())
         files = (f for f in filelist if f.is_file())
@@ -235,14 +228,25 @@ class Board:
         lsdirs = self.ls_dirs(dirs, opts)
         return itertools.chain([("", files)], lsdirs)
 
+    def remotefile(self, filename: RemoteFilename) -> RemotePath:
+        "Return a RemotePath object for the filename on the board."
+        return next(iter(self.ls_files((filename,))))
+
+    def remotefiles(self, filenames: RemoteFilenames) -> Iterable[RemotePath]:
+        "Return a list of RemotePath objects for the filename on the board."
+        return self.ls_files(filenames)
+
+    def remotefolder(self, folder: RemoteFilename) -> RemoteFolder:
+        "Return a RemotePath object for the filename on the board."
+        return RemoteFolder(self.ls((folder,), "-lR"))
+
     def check_files(
-        self, cmd: str, filenames: Filenames, dest: str = "", opts: str = ""
+        self, cmd: str, filenames: RemoteFilenames, dest: str = "", opts: str = ""
     ) -> tuple[list[RemotePath], Optional[RemotePath]]:
         filelist = list(self.ls_files([*filenames, dest] if dest else filenames))
         dest_f = filelist.pop() if dest else None
         missing = [str(f) for f in filelist if not f.exists()]
         dirs = [str(d) + "/" for d in filelist if d.is_dir()]
-
         # Check for invalid requests
         if missing:
             print(f"%{cmd}: Error: Missing files: {missing}.")
@@ -261,17 +265,15 @@ class Board:
 
         return (filelist, dest_f)
 
-    def rm(self, filenames: Filenames, opts: str) -> None:
+    def rm(self, filenames: RemoteFilenames, opts: str) -> None:
         filelist, _ = self.check_files("rm", filenames, "", opts)
-
         opts = f"{'v' in opts},{'n' in opts}"
         self.exec(f"_helper.rm({[str(f) for f in filelist]},{opts})", silent=False)
 
-    def mv(self, filenames: Filenames, dest: str, opts: str) -> None:
+    def mv(self, filenames: RemoteFilenames, dest: str, opts: str) -> None:
         filelist, dest_f = self.check_files("mv", filenames, dest, opts)
         if not filelist or not dest_f:
             return
-
         if len(filelist) == 1 and not dest_f.is_dir():
             # First - check for special cases...
             f = filelist[0]
@@ -282,7 +284,6 @@ class Board:
             else:
                 print(f"%mv: Error: Destination must be directory: {dest!r}")
             return
-
         # Move files to dest which is a directory
         for f in filelist:
             f2 = dest_f / f.name
@@ -290,7 +291,7 @@ class Board:
                 print(f"{str(f)} -> {str(f2)}")
             self.exec(f"os.rename({str(f)!r},{str(f2)!r})")
 
-    def cp(self, filenames: Filenames, dest: str, opts: str) -> None:
+    def cp(self, filenames: RemoteFilenames, dest: str, opts: str) -> None:
         "Copy files and directories on the micropython board."
         filelist, dest_f = self.check_files("cp", filenames, dest, opts)
         if not filelist or not dest_f:
@@ -298,7 +299,6 @@ class Board:
         dest = str(dest_f)
         files = [str(f) for f in filelist if f.is_file()]
         dirs = [str(d) + "/" for d in filelist if d.is_dir()]
-
         opts = f"{'v' in opts},{'n' in opts}"
         if len(filelist) == 1:
             # First - check for some special cases...
@@ -314,11 +314,9 @@ class Board:
                     f'_helper.cp_dir({dirs[0]!r},{dest + "/"!r},{opts})', silent=False
                 )
                 return
-
         if not dest_f.is_dir():
             print(f"%cp: Destination must be a directory: {dest}")
             return
-
         self.exec(f'_helper.cp({files},{dirs},{dest + "/"!r},{opts})', silent=False)
 
     def get_file(
@@ -359,12 +357,10 @@ class Board:
                 if f.is_file():
                     self.get_file(str(f1), str(f2), verbose, dry_run)
 
-    def get(self, filenames: Filenames, dest: PathLike, opts: str = "") -> None:
+    def get(self, filenames: RemoteFilenames, dest: PathLike, opts: str = "") -> None:
         "Copy files and directories from the board to a local folder:"
         dest = Path(dest)
-        verbose = "v" in opts
-        dry_run = "n" in opts
-        recursive = "r" in opts
+        verbose, dry_run, recursive = (i in opts for i in "vnr")
         filenames = list(filenames)
         if len(filenames) == 1 and not dest.is_dir():
             for f in filenames:  # TODO: What if f is a directory???
@@ -390,128 +386,116 @@ class Board:
                 elif not file.exists():
                     print(f"{str(file)}: No such file.")
 
-    def check_remote_is_up_to_date(
-        self, local: Path, remote: RemotePath, opts: str
-    ) -> int:
-        "If local is newer than remote, return mtime of local, else -1"
-        s = local.stat()
+    def skip_file(self, source: Path, dest: RemotePath) -> bool:
+        "If local is not newer than remote, return True."
+        s = source.stat()
         size, mtime = s[6], round(s[8])
-        if self.debug & Debug.FILES:
-            print(f"local: {str(local)} {size} {mtime}")
-            print(f"remote: {remote.as_posix()} {remote.size} {remote.mtime}")
-        if (
-            "s" in opts
-            and remote.exists()
-            and (
-                (mtime == remote.mtime and (local.is_dir() or size == remote.size))
-                or ("u" in opts and (mtime < remote.mtime))
-            )
-        ):
-            # Skip if same size and same time or newer on board
-            return -1
-        return mtime
+        return (source.is_dir() and dest.is_dir()) or (
+            source.is_file()
+            and dest.is_file()
+            and dest.mtime >= mtime
+            and dest.size == size
+        )
 
-    def put_file(self, filename: Path, dest: RemotePath, opts: str = "") -> None:
+    def put_file(self, source: Path, dest: RemotePath, opts: str = "") -> None:
         'Copy a local file "filename" to the "dest" folder on the board.'
-        if not filename.exists():
-            raise FileNotFoundError(f"Local file does not exist: '{filename}'")
-        if filename.is_dir() and dest.is_file():
+        if not source.exists():
+            raise FileNotFoundError(f"Local file does not exist: '{source}'")
+        if source.is_dir() and dest.is_file():
             raise OSError(f"Can not copy local dir to remote file {dest.as_posix()}")
-        if filename.is_file() and dest.is_dir():
+        if source.is_file() and dest.is_dir():
             raise OSError(f"Can not copy local file to remote dir {dest.as_posix()}")
-
-        mtime: int = 0
-        if "t" in opts or "s" in opts or "u" in opts:
-            mtime = self.check_remote_is_up_to_date(filename, dest, opts)
-            if mtime < 0:
-                return  # Skip if same size and same time or newer on board
+        if self.debug & Debug.FILES:
+            print(f"local: {source!r}")
+            print(f"remote: {dest!r}")
+        if "s" in opts and self.skip_file(source, dest):
+            return  # Skip if same size and same time or newer on board
         if "v" in opts:
             print(dest.slashify())
         if "n" in opts:
             return
-        if filename.is_file():
-            self.transport.fs_put(str(filename), str(dest))
-        elif filename.is_dir() and not dest.exists():
+        if source.is_file():
+            self.transport.fs_put(str(source), str(dest))
+        elif source.is_dir() and not dest.exists():
             self.mkdir(str(dest))
         if "t" in opts and self.board_has_utime:
             # Requires micropython PR#9644
+            mtime = round(source.stat()[8])
             self.exec(f"os.utime({str(dest)!r},(0,{mtime - RemotePath.epoch_offset}))")
 
-    def put_dir(self, directory: Path, dest: RemotePath, opts: str = "") -> None:
+    def put_dir(self, source: Path, dest: RemotePath, opts: str = "") -> None:
         "Recursively copy a directory to the micropython board."
-        base = directory.parent
+        source = source.resolve()
+        base = source.parent
         # Destination subdir is dest + basename of file
-        destdir = dest / directory.name
-
-        for subdirname, _, files in os.walk(directory):
-            subdir = Path(subdirname)
+        destdir = dest / source.name
+        for dirname, _, files in os.walk(source):
+            subdir = Path(dirname)
             # Dest subdir is dest + relative path from dir to base
             destdir = dest / subdir.relative_to(base)
             d = list(self.ls_files([str(destdir)]))[0]
             self.put_file(subdir, d, opts)
             for f in files:
-                f1, f2 = subdir / f, destdir / f
-                self.put_file(f1, f2, opts)
+                self.put_file(subdir / f, destdir / f, opts)
 
-    def put(self, filenames: Filenames, dest: PathLike, opts: str = "") -> None:
+    def put(
+        self,
+        filenames: Iterable[str],
+        destname: RemoteFilename,
+        opts: str = "",
+    ) -> None:
         "Copy local files to the current folder on the board."
-        dest = Path(dest)
         filenames = list(filenames)
         with self.raw_repl():
-            dest = list(self.ls_files([str(dest)]))[0]
+            dest = self.remotefile(destname)
+            # put localfile :newfilename
             if len(filenames) == 1 and not dest.is_dir():
-                for f in filenames:
-                    self.put_file(Path(f), dest, opts)
+                self.put_file(Path(filenames[0]), dest, opts)
                 return
             if not dest.is_dir():
-                print("get: Destination directory does not exist:", dest)
-                return
+                raise FileNotFoundError(f"Destination '{destname}' does not exist.")
+            # put localfile1 localfile2 ... :dir
+            # put -r localfile1 localdir ... :dir
             for filename in filenames:
                 file = Path(filename)
                 if not file.is_dir():
-                    f2 = dest / file.name
-                    self.put_file(file, f2, opts)
+                    self.put_file(file, dest / file.name, opts)
                 elif "r" in opts:  # file is a directory
                     self.put_dir(file, dest, opts)
                 else:
-                    print(
-                        f'put: skipping "{str(file)}", '
-                        f'use "-r" to copy directories.'
-                    )
+                    print(f"put: skipping '{str(file)}' use '-r' to copy directories.")
 
-    def rsync(self, src: PathLike, dest: str, opts: str = "") -> None:
+    def rsync(self, source: PathLike, dest: str, opts: str = "") -> None:
         "Sync local folder to a folder on the board."
         opts += "s"  # Force sync mode on
         with self.raw_repl():
-            localfile = Path(src)
-            destpath = RemotePath(dest) / localfile.name
-            remotefile = self.remotefile(destpath)
-            self.put_file(localfile, remotefile, opts)
-            if localfile.is_file():
+            src = Path(source).resolve()
+            dst = self.remotefile(RemotePath(dest) / src.name)
+            self.put_file(src, dst, opts)
+            if src.is_file():
                 return
-            remote = RemoteFolder(self.ls([str(destpath)], "-lR"))
-            for subdir, dirs, files in os.walk(localfile):
-                localsubdir = Path(subdir)
-                remotesubdir = remotefile / localsubdir.relative_to(localfile)
-                for f in itertools.chain(files, dirs):
-                    f1, f2 = localsubdir / f, remote[remotesubdir / f]
-                    self.put_file(f1, f2, opts)
+            remotefolder = self.remotefolder(dst)
+            print(remotefolder.ls)
+            for local in src.rglob("*"):
+                remote = remotefolder[dst / local.relative_to(src)]
+                self.put_file(local, remote, opts)
 
-    def df(self, dirs: Filenames) -> Sequence[tuple[str, int, int, int]]:
+    def df(self, dirs: RemoteFilenames) -> Sequence[tuple[str, int, int, int]]:
         ret: list[tuple[str, int, int, int]] = []
         for d in dirs or ["/"]:
-            _, bsz, tot, free, *_ = self.eval_json(f'print(list(os.statvfs("{d}")))')
-            ret.append((d, tot * bsz, (tot - free) * bsz, free * bsz))
+            _, bsz, tot, free, *_ = self.eval_json(
+                f'print(list(os.statvfs("{str(d)}")))'
+            )
+            ret.append((str(d), tot * bsz, (tot - free) * bsz, free * bsz))
         return ret
 
     def gc(self) -> tuple[int, int]:
         before, after = self.eval_json(
-            "from gc import mem_free,collect;"
-            "_b=mem_free();collect();print([_b,mem_free()])"
+            "import gc;_b=gc.mem_free();gc.collect();print([_b,gc.mem_free()])"
         )
         return (int(before), int(after))
 
     def get_time(self) -> time.struct_time:
-        time_cmd = "import utime;print(list(utime.localtime()))"
+        time_cmd = "import time;print(list(time.localtime()))"
         time_list = list(self.eval_json(time_cmd)) + [-1]  # is_dst = unknown
         return time.struct_time(time_list)
