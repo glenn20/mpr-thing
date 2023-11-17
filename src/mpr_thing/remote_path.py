@@ -65,6 +65,3 @@ class RemotePath(PurePosixPath):
 
     def __repr__(self) -> str:
         return f"RemotePath({self.name!r}, {[self.mode, self.size, self.mtime]})"
-
-    def __str__(self) -> str:  # Force posix representation for files on the board
-        return self.as_posix()
