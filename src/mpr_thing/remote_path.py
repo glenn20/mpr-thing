@@ -39,10 +39,6 @@ class RemotePath(PurePosixPath):
     def stat(self) -> tuple[int, int, int, int, int, int, int, int, int, int]:
         return (self.mode, 0, 0, 0, 0, 0, self.size, self.mtime, self.mtime, self.mtime)
 
-    def slashify(self) -> str:
-        name = self.as_posix()
-        return name + "/" if self.is_dir() and name != "/" else name
-
     def is_dir(self) -> bool:
         "Return True if the file is a directory."
         return (

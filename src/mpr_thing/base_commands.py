@@ -25,7 +25,7 @@ from pathlib import Path
 from traceback import print_exc
 from typing import Any, Iterable
 
-from .board import Board
+from .board import Board, slashify
 from .catcher import catcher
 from .colour import AnsiColour
 from .remote_path import RemotePath
@@ -541,7 +541,7 @@ class BaseCommands(cmd.Cmd):
             return [f":{f}" for f in self.complete_local(pre, post)]
         # Execute filename completion on the board.
         lsdir = self.board.ls_dir(pre or ".") or []
-        return [f.slashify() for f in lsdir if f.name.startswith(post)]
+        return [slashify(f) for f in lsdir if f.name.startswith(post)]
 
     def complete_params(self, word: str) -> Argslist:
         # Complete on board params, eg: set prompt="{de[TAB]

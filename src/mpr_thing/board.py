@@ -50,6 +50,11 @@ class RemoteFolder:
         return self.ls.get(str(file)) or RemotePath(str(file))
 
 
+def slashify(path: Any) -> str:
+    s = str(path)
+    return s if s[-1:] == "/" else s + "/"
+
+
 # A collection of helper functions for file listings and filename completion
 # to be uploaded to the micropython board and processed on the local host.
 class Board:
@@ -200,7 +205,7 @@ class Board:
         remotefiles: RemoteDirlist = []
         opts = f"{'R' in opts},{'l' in opts}"
         listing = self.eval_json(
-            f"_helper.ls_dirs({[str(d) for d in dir_list]},{opts})"
+            f"_helper.ls_dirs({[slashify(d) for d in dir_list]},{opts})"
         )
         listing.sort(key=lambda d: d[0])  # Sort by directory pathname
         for _, file_list in listing:
@@ -222,11 +227,11 @@ class Board:
         filelist = list(self.ls_files(filenames))  # We parse this several times
         missing = (f for f in filelist if not f.exists())
         files = (f for f in filelist if f.is_file())
-        dirs = (d.slashify() for d in filelist if d.is_dir()) if filenames else ["./"]
+        dirs = (d for d in filelist if d.is_dir())
         for f in missing:
             print(f"ls: cannot access {f.as_posix()!r}: No such file or directory")
-        lsdirs = self.ls_dirs(dirs, opts)
-        return itertools.chain([("", files)], lsdirs)
+        lsdirs = self.ls_dirs(dirs if filenames else ["./"], opts)
+        return itertools.chain([("", list(dirs) + list(files))], lsdirs)
 
     def remotefile(self, filename: RemoteFilename) -> RemotePath:
         "Return a RemotePath object for the filename on the board."
@@ -411,7 +416,7 @@ class Board:
         if "s" in opts and self.skip_file(source, dest):
             return  # Skip if same size and same time or newer on board
         if "v" in opts:
-            print(dest.slashify())
+            print(slashify(dest))
         if "n" in opts:
             return
         if source.is_file():
