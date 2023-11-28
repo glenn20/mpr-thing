@@ -62,16 +62,16 @@ class RemoteCmd(BaseCommands):
         The file listing will be colourised the same as "ls --color". Use the
         "set" command to add or change the file listing colours."""
         opts, args = self._options(args)
-        filelist = list(self.board.ls(args, opts))
-        linebreak = ""
-        first_time = True
-        for directory, files in filelist:
-            if not first_time and len(filelist) > 2:  # Print the directory name
-                print(f"{linebreak}{self.colour.dir(directory)}")
-            if directory or files:
-                self.print_files(files, opts)
-                linebreak = "\n"
-            first_time = False
+        listing = self.board.ls(args, opts)
+        files = [f for f in listing[""] if f.exists() and not f.is_dir()]
+        missing = [f for f in listing[""] if not f.exists()]
+        for f in missing:
+            print(f"'{f}': No such file or directory.")
+        self.print_files(files, opts)
+        for directory, files in listing.items():  # Recursively print directories
+            if directory:
+                print(f"{self.colour.dir(directory)}:")
+                self.print_files(files, opts)  # Print files in the directories
 
     def do_cat(self, args: Argslist) -> None:
         """

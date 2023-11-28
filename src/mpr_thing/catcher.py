@@ -53,13 +53,8 @@ def raw_repl(
     message: Any = None,
     soft_reset: bool = False,
 ) -> Generator[None, None, None]:
-    """Enter the raw_repl on the micropython board and trap and report
-    any TransportError exceptions raised.
-
-    Eg:
-        from catcher import raw_repl
-        with raw_repl(pyboard, write_fn):
-            board.exec("machine.Pin(4).value(1)")
+    """A context manager for the mpremote raw_repl.
+    These may be nested, but only the outermost will enter/exit the raw_repl.
     """
     restore_repl = False
     try:
@@ -68,7 +63,6 @@ def raw_repl(
             restore_repl = True
             transport.enter_raw_repl(soft_reset)
         yield
-
     except KeyboardInterrupt:
         # ctrl-C twice: interrupt any running program
         print("Interrupting command on board.")
@@ -81,8 +75,6 @@ def raw_repl(
             write_fn(exc.args[2])
         else:  # Others just include a single message
             write_fn(exc.args[0].encode())
-    except Exception as err:
-        raise err
     finally:
         # Only exit the raw_repl if we entered it with this instance
         if restore_repl and transport.in_raw_repl:

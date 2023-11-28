@@ -77,7 +77,6 @@ class BaseCommands(cmd.Cmd):
         self.multi_cmd_mode = False
         self.shell_mode = False
         self.board = board
-        self.colour = AnsiColour()
         self.prompt = self.base_prompt
         self.prompt_fmt = (
             "{bold-cyan}{id} {yellow}{platform} ({free}){bold-blue}{pwd}> "
@@ -230,7 +229,7 @@ class BaseCommands(cmd.Cmd):
             for f in files:
                 size = f.size if not f.is_dir() else 0
                 t = time.strftime("%c", time.localtime(f.mtime)).replace(" 0", "  ")
-                filename = self.colour.file(f.name, directory=f.is_dir())
+                filename = self.colour.file(f.name or ".", directory=f.is_dir())
                 print(f"{size:9d} {t[:-3]} {filename}")
         else:
             # Short listing style - data is a list of filenames
@@ -518,30 +517,26 @@ class BaseCommands(cmd.Cmd):
             return
         func()
 
-    def complete_local(self, pre: str, post: str) -> Argslist:
+    def complete_local(self, word: str) -> Argslist:
+        "Commandline completion for filenames on the local host."
         # Complete names starting with ":" as remote files.
-        if pre[:1] == ":" or not pre and post[:1] == ":":
-            pre, post = pre.lstrip(":"), post.lstrip(":")
-            return [f":{f}" for f in self.complete_remote(pre, post)]
-        # Execute filename completion on local host
-        try:
-            _, dirs, files = next(os.walk(os.path.expanduser(pre) or "."))
-            files = [pre + f for f in files if f.startswith(post)]
-            files.extend(pre + f + "/" for f in dirs if f.startswith(post))
-            files.sort()
-        except OSError as err:
-            print(OSError, err)
-            return []
-        return files
+        if word.startswith(":"):
+            return [f":{f}" for f in self.complete_remote(word)]
+        # Filename completion on local host ...this is a local shop for local people.
+        sep = word.rfind("/")
+        pre, post = word[: sep + 1], word[sep + 1 :]
+        files = Path(pre or ".").expanduser().glob(post + "*")
+        return sorted([slashify(f) for f in files])
 
-    def complete_remote(self, pre: str, post: str) -> Argslist:
+    def complete_remote(self, word: str) -> Argslist:
         # Complete names starting with ":" as local files.
-        if pre[:1] == ":" or not pre and post[:1] == ":":
-            pre, post = pre.lstrip(":"), post.lstrip(":")
-            return [f":{f}" for f in self.complete_local(pre, post)]
+        if word.startswith(":"):
+            return [f":{f}" for f in self.complete_local(word.lstrip(":"))]
         # Execute filename completion on the board.
-        lsdir = self.board.ls_dir(pre or ".") or []
-        return [slashify(f) for f in lsdir if f.name.startswith(post)]
+        sep = word.rfind("/")
+        pre, post = word[: sep + 1], word[sep + 1 :]
+        lsdir = self.board.ls_dir(pre or ".")
+        return [pre + f for f in lsdir if f.startswith(post)]
 
     def complete_params(self, word: str) -> Argslist:
         # Complete on board params, eg: set prompt="{de[TAB]
@@ -554,11 +549,9 @@ class BaseCommands(cmd.Cmd):
         'Perform filename completion on "word".'
         word, line, *_ = args
         command = line.split()[0].lstrip("%")
-        sep = word.rfind("/")
         if self.shell_mode:
             command = "shell"
         # pre is the directory portion, post is the incomplete filename
-        pre, post = word[: sep + 1], word[sep + 1 :]
         if command in ("set", "echo"):
             # Complete on board params, eg: set prompt="{de[TAB]
             return self.complete_params(word)
@@ -567,9 +560,9 @@ class BaseCommands(cmd.Cmd):
             return []
         elif command in self.remote_cmds:
             # Execute filename completion on the board.
-            files = self.complete_remote(pre, post)
+            files = self.complete_remote(word)
         else:
-            files = self.complete_local(pre, post)
+            files = self.complete_local(word)
 
         # Return all filenames or only directories if requested
         return (
@@ -707,32 +700,22 @@ class BaseCommands(cmd.Cmd):
 
     def run(self, prefix: bytes = b"%") -> None:
         "Catch exceptions and restart the Cmd.cmdloop()."
-        stop = False
         self.initialise()  # Load the helper code onto the board
         self.shell_mode = prefix == b"!"
+        stop = False
         while not stop:
-            stop = True
             try:
                 self.cmdloop()
             except KeyboardInterrupt:
-                stop = not self.multi_cmd_mode
                 print()
-                if not self.multi_cmd_mode:
-                    print(f"{self.colour.ansi('reset')}", end="")
-                    print(
-                        self.base_prompt, end="", flush=True
-                    )  # Re-print the micropython prompt
             except Exception as err:  # pylint: disable=broad-except
-                print("Error in command:", err)
-                print(f"{err.args}")
+                print(f"Error in command: {err}\n{err.args}")
                 print_exc()
                 # raise
-                if not self.multi_cmd_mode:
+            finally:
+                if stop := not self.multi_cmd_mode:
                     print(f"{self.colour.ansi('reset')}", end="")
-                    print(
-                        self.base_prompt, end="", flush=True
-                    )  # Re-print the micropython prompt
-                stop = not self.multi_cmd_mode
+                    print(self.base_prompt, end="", flush=True)
         self.shell_mode = False
 
     def emptyline(self) -> bool:  # Else empty lines repeat last command

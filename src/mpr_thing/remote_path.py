@@ -25,7 +25,7 @@ class RemotePath(PurePosixPath):
         self.mtime = 0
         self._exists = False
 
-    def set_modes(self, modes: Sequence[int]) -> RemotePath:
+    def set_stat(self, modes: Sequence[int]) -> RemotePath:
         """Set the file mode, size and mtime values."""
         self.mode = modes[0] if modes else 0
         self.size = modes[1] if modes[1:] else -1
