@@ -56,6 +56,11 @@ def slashify(path: Path | RemotePath | str) -> str:
     return s + "/" if add_slash else s
 
 
+def deslashify(path: Path | RemotePath | str) -> str:
+    s = str(path)
+    return s if s == "/" else s.rstrip("/")
+
+
 # A collection of helper functions for file listings and filename completion
 # to be uploaded to the micropython board and processed on the local host.
 class Board:
@@ -204,7 +209,7 @@ class Board:
         #  "dir2": {"f1": [mode, size, mtime], "f2": [mode..], ...}, ...
         # }
         opts = f"{'R' in opts},{'l' in opts}"
-        file_list = [str(d) for d in (filenames or ["."])]
+        file_list = [deslashify(d) for d in (filenames or ["."])]
         listing: dict[str, dict[str, list[int]]] = self.eval_json(
             f"_helper.ls({file_list},{opts})"
         )

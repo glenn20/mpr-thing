@@ -68,9 +68,10 @@ class RemoteCmd(BaseCommands):
         for f in missing:
             print(f"'{f}': No such file or directory.")
         self.print_files(files, opts)
+        sep = "" if "l" in opts else "\n"
         for directory, files in listing.items():  # Recursively print directories
             if directory:
-                print(f"{self.colour.dir(directory)}:")
+                print(f"{sep}{self.colour.dir(directory)}:")
                 self.print_files(files, opts)  # Print files in the directories
 
     def do_cat(self, args: Argslist) -> None:
