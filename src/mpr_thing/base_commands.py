@@ -25,10 +25,10 @@ from pathlib import Path
 from traceback import print_exc
 from typing import Any, Iterable
 
-from .board import Board, slashify
+from .board import MPBoard
 from .catcher import catcher
 from .colour import AnsiColour
-from .remote_path import RemotePath
+from .pathfun import slashify
 
 # Type alias for the list of command arguments
 Argslist = list[str]
@@ -71,7 +71,7 @@ class BaseCommands(cmd.Cmd):
     # Commands that have no completion
     noglob_cmds = ("eval", "exec", "alias", "unalias", "set")
 
-    def __init__(self, board: Board):
+    def __init__(self, board: MPBoard):
         self.initialised = False
         self.colour = AnsiColour()
         self.multi_cmd_mode = False
@@ -148,19 +148,14 @@ class BaseCommands(cmd.Cmd):
             re.sub(r"^COM([0-9]+)$", r"c\1", device_name.lower()),  # COM2 -> c2
         )
         with catcher():
-            self.params["platform"] = self.board.eval_json(
-                'import sys;print("{!r}".format(sys.platform))'
-            )
+            self.board.exec("import os, sys, gc; from machine import unique_id")
+            self.params["platform"] = self.board.eval("sys.platform")
         with catcher():
-            self.params["unique_id"] = self.board.eval_json(
-                "from machine import unique_id;"
-                'print("{!r}".format(unique_id().hex(":")))'
-            )
+            self.params["unique_id"] = self.board.eval('unique_id().hex(":")')
         with catcher():
-            self.params.update(  # Update the board params from os.uname()
-                self.board.eval_json('print(repr(eval(f"dict{os.uname()!r}")))')
-            )
-        self.params["id"] = self.params["unique_id"][-8:]  # Last 3 octets
+            self.params.update(self.board.eval('eval(f"dict{os.uname()}")'))
+        unique_id = self.params.get("unique_id", "")
+        self.params["id"] = unique_id[-8:]  # Last 3 octets
         # Add the ansi colour names
         self.params.update({c: self.colour.ansi(c) for c in self.colour.colour})
 
@@ -174,7 +169,9 @@ class BaseCommands(cmd.Cmd):
             )
             return
         self.load_board_params()
-        pwd, alloc, free = self.board.eval_json("_helper.pr()")
+        pwd, alloc, free = self.board.eval(
+            "(os.getcwd(), gc.mem_alloc(), gc.mem_free())"
+        )
 
         free_pc = round(100 * free / (alloc + free), None) if alloc > 0 else 0
         free_delta = max(0, self.params.get("free", free) - free)
@@ -216,7 +213,7 @@ class BaseCommands(cmd.Cmd):
             + self.colour.ansi(self.command_colour)
         )
 
-    def print_files(self, files: Iterable[RemotePath], opts: str) -> None:
+    def print_files(self, files: Iterable[Path], opts: str) -> None:
         """Print a file listing (long or short style) from data returned
         from the board."""
         # Pretty printing for files on the board
@@ -227,16 +224,17 @@ class BaseCommands(cmd.Cmd):
         if "l" in opts:
             # Long listing style - data is a list of filenames
             for f in files:
-                size = f.size if not f.is_dir() else 0
-                t = time.strftime("%c", time.localtime(f.mtime)).replace(" 0", "  ")
-                filename = self.colour.file(f.name or ".", directory=f.is_dir())
+                st = f.stat()
+                size = st.st_size if not f.is_dir() else 0
+                t = time.strftime("%c", time.localtime(st.st_mtime)).replace(" 0", "  ")
+                filename = self.colour.pathname(f)
                 print(f"{size:9d} {t[:-3]} {filename}")
         else:
             # Short listing style - data is a list of filenames
             if len(files) < 20 and sum(len(f.name) + 2 for f in files) < columns:
                 # Print all on one line
                 for f in files:
-                    print(self.colour.file(f.name, directory=f.is_dir()), end="  ")
+                    print(self.colour.pathname(f), end="  ")
                 print("")
             else:
                 # Print in columns - by row
@@ -246,7 +244,7 @@ class BaseCommands(cmd.Cmd):
                 for i, f in enumerate(files):
                     n = i + 1
                     print(
-                        self.colour.file(f.name, directory=f.is_dir()),
+                        self.colour.pathname(f),
                         spaces[len(f.name) :],
                         sep="",
                         end=("" if n % cols and n < len(files) else "\n"),

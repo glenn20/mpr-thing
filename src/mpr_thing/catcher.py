@@ -8,10 +8,7 @@ handing exceptions.
 # For python<3.10: Allow type1 | type2 instead of Union[type1, type2]
 from __future__ import annotations
 
-from contextlib import contextmanager
-from typing import Any, Callable, Generator
-
-from mpremote.transport_serial import SerialTransport, TransportError
+from typing import Any, Callable
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
@@ -43,40 +40,3 @@ class catcher:
             print(f"{exc_type.__name__}: {exc_value}")
             print(traceback)
         return True
-
-
-# A context manager for the raw_repl - not re-entrant
-@contextmanager
-def raw_repl(
-    transport: SerialTransport,
-    write_fn: Writer,
-    message: Any = None,
-    soft_reset: bool = False,
-) -> Generator[None, None, None]:
-    """A context manager for the mpremote raw_repl.
-    These may be nested, but only the outermost will enter/exit the raw_repl.
-    """
-    restore_repl = False
-    try:
-        # We can nest raw_repl() managers - only enter raw repl if necessary
-        if not transport.in_raw_repl:
-            restore_repl = True
-            transport.enter_raw_repl(soft_reset)
-        yield
-    except KeyboardInterrupt:
-        # ctrl-C twice: interrupt any running program
-        print("Interrupting command on board.")
-        transport.serial.write(b"\r\x03\x03")
-        raise
-    except TransportError as exc:
-        write_fn(f"TransportError: {message!r}\r\n".encode())
-        if len(exc.args) == 3:  # Raised by Pyboard.exec_()
-            write_fn(exc.args[1])
-            write_fn(exc.args[2])
-        else:  # Others just include a single message
-            write_fn(exc.args[0].encode())
-    finally:
-        # Only exit the raw_repl if we entered it with this instance
-        if restore_repl and transport.in_raw_repl:
-            transport.exit_raw_repl()
-            transport.read_until(4, b">>> ")

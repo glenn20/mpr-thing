@@ -14,6 +14,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from . import pathfun
 from .base_commands import Argslist, BaseCommands
 
 
@@ -62,17 +63,22 @@ class RemoteCmd(BaseCommands):
         The file listing will be colourised the same as "ls --color". Use the
         "set" command to add or change the file listing colours."""
         opts, args = self._options(args)
-        listing = self.board.ls(args, opts)
-        files = [f for f in listing[""] if f.exists() and not f.is_dir()]
-        missing = [f for f in listing[""] if not f.exists()]
+        listing = iter(self.board.ls(args or ["."], opts))
+        directory, ls = next(listing)
+        assert directory == ""
+        files, dirs, missing = pathfun.split(ls)
+        ndirs = len(list(dirs))
         for f in missing:
             print(f"'{f}': No such file or directory.")
-        self.print_files(files, opts)
-        sep = "" if "l" in opts else "\n"
-        for directory, files in listing.items():  # Recursively print directories
-            if directory:
-                print(f"{sep}{self.colour.dir(directory)}:")
-                self.print_files(files, opts)  # Print files in the directories
+        self.print_files(files, opts)  # Print the files on the command line
+        started, shortform = bool(files), "l" not in opts
+        for directory, subfiles in listing:  # Recursively print directories
+            if "R" in opts or ndirs > 1 or files:
+                if started and shortform:
+                    print()
+                started = shortform
+                print(f"{self.colour.dir(directory)}:")
+            self.print_files(subfiles, opts)  # Print files in the directories
 
     def do_cat(self, args: Argslist) -> None:
         """
@@ -166,21 +172,6 @@ class RemoteCmd(BaseCommands):
             print(f"%put: do not put files into /remote mounted folder: {pwd}")
             return
         self.board.put(args, dest, opts + "rv")
-
-    def do_rsync(self, args: Argslist) -> None:
-        """
-        Sync a local folder to a folder on the board:
-            %sync file, folder, ... :dest
-        """
-        opts, args = self._options(args)
-        self.load_board_params()
-        pwd: str = self.params["pwd"]
-        dest = args.pop()[1:] if args[-1].startswith(":") else pwd
-        if self._is_remote(dest, pwd):
-            print(f"%put: do not sync files into /remote mounted folder: {pwd}")
-            return
-        for arg in args:
-            self.board.rsync(arg, dest, opts)
 
     # Directory commands
     def do_cd(self, args: Argslist) -> None:

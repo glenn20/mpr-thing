@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from pathlib import Path
 from typing import Any, Optional
 
 from colorama import init as colorama_init  # For ansi colour on Windows
@@ -103,6 +104,26 @@ class AnsiColour:
             else self.spec.get(os.path.splitext(file)[1], "")
         )
         return self.bold(spec, bold)
+
+    # Return a colour decorated filename
+    def pathname(self, file: Path, reset: str = "0") -> str:
+        """Return "file" colourised according to the colour "ls" command."""
+        name = file.name
+        return (
+            self.dir(name, reset=reset)
+            if file.is_dir()
+            else self.colourise(self.pick(name), name, reset=reset)
+        )
+
+    # Return a colour decorated filename
+    def path(self, file: Path, reset: str = "0") -> str:
+        """Return "file" colourised according to the colour "ls" command."""
+        name = str(file)
+        return (
+            self.dir(name, reset=reset)
+            if file.is_dir()
+            else self.colourise(self.pick(name), name, reset=reset)
+        )
 
     # Return a colour decorated filename
     def file(self, file: str, directory: bool = False, reset: str = "0") -> str:

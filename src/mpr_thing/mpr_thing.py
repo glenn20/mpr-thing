@@ -15,7 +15,7 @@ from mpremote.main import State
 from mpremote.transport_serial import SerialTransport, TransportError
 from serial import Serial
 
-from .board import Board
+from .board import MPBoard
 from .remote_commands import RemoteCmd
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
@@ -76,7 +76,7 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
     prompt = b"\n>>> "
     transport: SerialTransport = state.transport  # type: ignore
-    remote = RemoteCmd(Board(transport, console_out_write))
+    remote = RemoteCmd(MPBoard(transport, console_out_write))
 
     while True:
         console_in.waitchar(transport.serial)
