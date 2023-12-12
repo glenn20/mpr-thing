@@ -64,9 +64,8 @@ class RemoteCmd(BaseCommands):
         "set" command to add or change the file listing colours."""
         opts, args = self._options(args)
         listing = iter(self.board.ls(args or ["."], opts))
-        directory, ls = next(listing)
-        assert directory == ""
-        files, dirs, missing = pathfun.split(ls)
+        # The first entry is the listing of the files on the command line
+        dirs, files, missing = pathfun.split(next(listing)[1])
         ndirs = len(list(dirs))
         for f in missing:
             print(f"'{f}': No such file or directory.")
@@ -77,7 +76,7 @@ class RemoteCmd(BaseCommands):
                 if started and shortform:
                     print()
                 started = shortform
-                print(f"{self.colour.dir(directory)}:")
+                print(f"{self.colour.path(directory)}:")
             self.print_files(subfiles, opts)  # Print files in the directories
 
     def do_cat(self, args: Argslist) -> None:

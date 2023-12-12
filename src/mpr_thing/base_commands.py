@@ -148,7 +148,7 @@ class BaseCommands(cmd.Cmd):
             re.sub(r"^COM([0-9]+)$", r"c\1", device_name.lower()),  # COM2 -> c2
         )
         with catcher():
-            self.board.exec("import os, sys, gc; from machine import unique_id")
+            self.board.exec("import os, sys, gc, time; from machine import unique_id")
             self.params["platform"] = self.board.eval("sys.platform")
         with catcher():
             self.params["unique_id"] = self.board.eval('unique_id().hex(":")')

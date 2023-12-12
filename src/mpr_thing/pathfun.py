@@ -5,7 +5,7 @@ from typing import Iterable
 
 from mpremote_path import MPRemotePath as MPath
 
-Dirlist = Iterable[tuple[str, Iterable[Path]]]
+Dirlist = Iterable[tuple[Path, Iterable[Path]]]
 
 max_depth = 20
 
@@ -18,38 +18,46 @@ def slashify(path: Path | str) -> str:
 
 def split(files: Iterable[Path]) -> tuple[list[Path], list[Path], list[Path]]:
     """Split files into directories, files and missing."""
-    files, dirs, missing = itertools.tee(files, 3)
+    dirs, files, missing = itertools.tee(files, 3)
     return (
-        [f for f in files if f.is_file()],
         [f for f in dirs if f.is_dir()],
+        [f for f in files if f.is_file()],
         [f for f in missing if not f.exists()],
     )
 
 
 def ls_dir(path: Path, depth: int = max_depth) -> Dirlist:
-    """Return a directory list of `path` up to `depth` deep.
+    """Return a directory list of `path` (must be directory) up to `depth` deep.
     If `depth` is 0, only the top level directory is listed."""
     if path.is_dir():
-        files = (f for f in path.iterdir())
-        yield ((str(path), files))
+        files = [f for f in path.iterdir()]
+        yield (path, files)
         if depth > 0:
-            for child in (f for f in path.iterdir() if f.is_dir()):
+            for child in (f for f in files if f.is_dir()):
                 yield from ls_dir(child, depth - 1)
 
 
 def ls_files(files: Iterable[Path], recursive: bool = False) -> Dirlist:
     files = list(files)
-    yield ("", files)
+    yield (Path(), files)
     for f in (f for f in files if f.is_dir()):
         yield from ls_dir(f, max_depth if recursive else 0)
 
 
 def copypath(src: Path, dst: Path) -> None:
-    """Copy a file."""
+    """Copy a file, with optimisations for mpremote paths."""
     if src.is_dir():
         dst.mkdir()
+    elif not src.is_file():
+        pass  # skip non regular files
     elif isinstance(src, MPath) and isinstance(dst, MPath):
         src.copy(dst)
+    elif isinstance(src, MPath) and not isinstance(dst, MPath):
+        with src.board.raw_repl() as r:
+            r.fs_get(str(src), str(dst))
+    elif not isinstance(src, MPath) and isinstance(dst, MPath):
+        with dst.board.raw_repl() as r:
+            r.fs_put(str(src), str(dst))
     elif not isinstance(src, MPath) and not isinstance(dst, MPath):
         shutil.copyfile(src, dst)
     else:
