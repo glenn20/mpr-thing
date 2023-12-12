@@ -14,6 +14,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from mpremote_path import MPRemotePath as MPath
+
 from . import pathfun
 from .base_commands import Argslist, BaseCommands
 
@@ -279,22 +281,9 @@ class RemoteCmd(BaseCommands):
             %time set utc   : Set the RTC clock on the board from UTC time
             %time           : Print the RTC clock time on the board"""
         if args and args[0] == "set":
-            rtc_cmds = {
-                "esp8266": "from machine import RTC;RTC().datetime({})",
-                "pyb": "from pyb import RTC;RTC().datetime({})",
-                "pycom": "from machine import RTC;_t={};"
-                "RTC().init((_t[i] for i in [0,1,2,4,5,6]))",
-            }
-            default = "from machine import RTC;RTC().init({})"
-            self.load_board_params()
-            fmt = rtc_cmds.get(self.params["sysname"], default)
-            t = time.gmtime() if "utc" in args else time.localtime()
-            cmd = fmt.format(
-                (t.tm_year, t.tm_mon, t.tm_mday, 0, t.tm_hour, t.tm_min, t.tm_sec, 0)
-            )
-            self.board.exec(cmd)
-            self.board.check_time_offset()
-        print(time.asctime(self.board.get_time()))
+            self.board.board.check_time(sync_clock=True, utc="utc" in args)
+        time_list = self.board.eval("time.localtime()") + (-1,)  # is_dst = unknown
+        print(time.asctime(time.struct_time(time_list)))
 
     def do_mount(self, args: Argslist) -> None:
         """
@@ -303,10 +292,14 @@ class RemoteCmd(BaseCommands):
             %mount [folder]   # If no folder specified use '.'"""
         # Don't use relative paths - these can change if we "!cd .."
         opts, args = self._options(args)
-        path = args[0] if args else "."
-        self.board.mount(path, opts)
-        print(f"Mounted local folder {args} on /remote")
-        self.board.exec("print(os.getcwd())")
+        path = Path(args[0] if args else ".").resolve()
+        if path.is_dir():
+            with self.board.board.raw_repl() as r:
+                r.mount_local(str(path), unsafe_links="l" in opts)
+            print(f"Mounted local folder {args} on /remote")
+            self.board.exec("print(os.getcwd())")
+        else:
+            print("%mount: No such directory:", path)
 
     def do_umount(self, args: Argslist) -> None:
         """
@@ -315,7 +308,12 @@ class RemoteCmd(BaseCommands):
         if args:
             print("umount: unexpected args:", args)
         self.board.umount()
-        self.board.exec("print(os.getcwd())")
+        if str(MPath.cwd()).startswith("/remote"):
+            MPath("/").chdir()
+            print(MPath.cwd())
+        with self.board.board.raw_repl() as r:
+            r.umount_local()
+        print("Unmounted /remote")
 
     def do_free(self, args: Argslist) -> None:
         """

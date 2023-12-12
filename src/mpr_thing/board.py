@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import re
-import time
 from enum import IntFlag
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence
@@ -26,7 +25,7 @@ PathLike = str | os.PathLike  # Accepts str or Pathlib for filenames
 RemoteFilename = str | MPath
 RemoteFilenames = Iterable[RemoteFilename]
 RemoteDirlist = Iterable[tuple[str, Iterable[MPath]]]
-Dirlist = Iterable[tuple[str, Iterable[Path]]]
+Dirlist = Iterable[tuple[Path, Iterable[Path]]]
 
 CODE_COMPRESS_RULES: list[tuple[bytes, bytes, dict[str, int]]] = [
     (b" *#.*$", b"", {"flags": re.MULTILINE}),  # Delete comments
@@ -74,14 +73,7 @@ class MPBoard:
         "Load the __helper class and methods onto the micropython board."
         if self.helper_loaded:
             return
-        self.check_time_offset()
         self.helper_loaded = True
-
-    def check_time_offset(self) -> None:
-        tt = time.gmtime(time.time())  # Use now as a reference time
-        localtm = time.mktime((*tt[:8], -1))  # let python sort out dst
-        remotetm: int = self.board.eval(f"time.mktime({tt[:8]})")
-        MPath.epoch_offset = round(localtm - remotetm)
 
     def device_name(self) -> str:
         "Get the name of the serial port connected to the micropython board."
@@ -136,21 +128,6 @@ class MPBoard:
 
     def rmdir(self, filename: str) -> None:
         mpath(filename).rmdir()
-
-    def mount(self, directory: str, opts: str = "") -> None:
-        path = Path(directory).resolve()
-        if not path.is_dir():
-            print("%mount: No such directory:", path)
-            return
-        with self.raw_repl() as r:
-            r.mount_local(str(path), unsafe_links="l" in opts)
-
-    def umount(self) -> None:
-        'Unmount any Virtual Filesystem mounted at "/remote" on the board.'
-        # Must chdir before umount or bad things happen.
-        self.exec('os.getcwd().startswith("/remote") and os.chdir("/")')
-        with self.raw_repl() as r:
-            r.umount_local()
 
     def ls_files(self, filenames: RemoteFilenames) -> Iterable[MPath]:
         "Return a list of files (MPRemotePath) on board for list of filenames."
@@ -253,8 +230,3 @@ class MPBoard:
             "import gc;_b=gc.mem_free();gc.collect();print([_b,gc.mem_free()])"
         )
         return (int(before), int(after))
-
-    def get_time(self) -> time.struct_time:
-        time_cmd = "import time;print(time.localtime())"
-        time_list = self.board.exec_eval(time_cmd) + (-1,)  # is_dst = unknown
-        return time.struct_time(time_list)
