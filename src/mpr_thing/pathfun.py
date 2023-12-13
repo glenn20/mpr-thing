@@ -1,7 +1,7 @@
 import itertools
 import shutil
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from mpremote_path import MPRemotePath as MPath
 
@@ -10,9 +10,13 @@ Dirlist = Iterable[tuple[Path, Iterable[Path]]]
 max_depth = 20
 
 
+def mpath(f: Any) -> MPath:
+    return f if isinstance(f, MPath) else MPath(str(f))
+
+
 def slashify(path: Path | str) -> str:
     s = str(path)
-    add_slash = not s.endswith("/") and not isinstance(path, str) and path.is_dir()
+    add_slash = not s.endswith("/") and isinstance(path, Path) and path.is_dir()
     return s + "/" if add_slash else s
 
 
@@ -44,34 +48,89 @@ def ls_files(files: Iterable[Path], recursive: bool = False) -> Dirlist:
         yield from ls_dir(f, max_depth if recursive else 0)
 
 
-def copypath(src: Path, dst: Path) -> None:
+def skip_file(src: Path, dst: MPath) -> bool:
+    "If local is not newer than remote, return True."
+    s, d = src.stat(), dst.stat()
+    return (src.is_dir() and dst.is_dir()) or (
+        src.is_file()
+        and dst.is_file()
+        and (d := dst.stat()).st_mtime >= round((s := src.stat()).st_mtime)
+        and d.st_size == s.st_size
+    )
+
+
+def check_files(
+    cmd: str, filenames: Iterable[str | MPath], dest: str = "", opts: str = ""
+) -> tuple[list[MPath], MPath | None]:
+    filelist = [mpath(f) for f in ([*filenames, dest] if dest else filenames)]
+    dest_f = filelist.pop() if dest else None
+    missing = [str(f) for f in filelist if not f.exists()]
+    dirs = [str(d) + "/" for d in filelist if d.is_dir()]
+    # Check for invalid requests
+    if missing:
+        print(f"%{cmd}: Error: Missing files: {missing}.")
+        return ([], None)
+    if dest_f:
+        for f in filelist:
+            if f.is_dir() and f in dest_f.parents:
+                print(f"%{cmd}: Error: {dest!r} is subfolder of {f!r}")
+                return ([], None)
+            if str(f) == dest:
+                print(f"%{cmd}: Error: source is same as dest: {f!r}")
+                return ([], None)
+    if dirs and cmd in ["rm", "cp", "get", "put"] and "r" not in opts:
+        print(f'%{cmd}: Error: Can not process dirs (use "{cmd} -r"): {dirs}')
+        return ([], None)
+
+    return (filelist, dest_f)
+
+
+def copyfile(src: Path, dst: Path) -> Path | None:
     """Copy a file, with optimisations for mpremote paths."""
-    if src.is_dir():
-        dst.mkdir()
-    elif not src.is_file():
-        pass  # skip non regular files
+    if not src.is_file():
+        return None  # skip non regular files
     elif isinstance(src, MPath) and isinstance(dst, MPath):
-        src.copy(dst)
+        src.copy(dst)  # Both files are on the micropython board
     elif isinstance(src, MPath) and not isinstance(dst, MPath):
         with src.board.raw_repl() as r:
-            r.fs_get(str(src), str(dst))
+            r.fs_get(str(src), str(dst))  # Copy from micropython board to local
     elif not isinstance(src, MPath) and isinstance(dst, MPath):
         with dst.board.raw_repl() as r:
-            r.fs_put(str(src), str(dst))
+            r.fs_put(str(src), str(dst))  # Copy from local to micropython board
     elif not isinstance(src, MPath) and not isinstance(dst, MPath):
-        shutil.copyfile(src, dst)
+        shutil.copyfile(src, dst)  # Copy local file to local file
     else:
-        dst.write_bytes(src.read_bytes())
+        dst.write_bytes(src.read_bytes())  # Fall back to copying file content
+    return dst
+
+
+def copypath(src: Path, dst: Path) -> Path | None:
+    """Copy a file or directory.
+    If `src` is a regular file, call `copyfile()` to copy it to `dst`.
+    If `src` is a directory, and `dst` is not a directory, make the new
+    directory.
+    Returns `dst` if successful, otherwise returns `None`."""
+    if src.is_dir():
+        if not dst.is_dir():
+            dst.mkdir()  # "Copy" by creating the destination directory
+        return dst
+    return copyfile(src, dst)
 
 
 def rcopy(src: Path, dst: Path) -> None:
     """Copy a file or directory recursively."""
-    slash = "/" if src.is_dir() else ""
-    print(f"{src}{slash} -> {dst}{slash}/")
-    copypath(src, dst)
-    if src.is_dir():
-        for child in src.iterdir():
-            rcopy(child, dst / child.name)
+    if copypath(src, dst):
+        slash = "/" if src.is_dir() else ""
+        print(f"{src}{slash} -> {dst}{slash}")
+        if src.is_dir():
+            for child in src.iterdir():
+                rcopy(child, dst / child.name)
+
+
+def copy_into_dir(src: Path, dst: Path) -> Path | None:
+    "Copy files and directories on the micropython board."
+    if dst.is_dir():
+        return copypath(src, dst / src.name)
 
 
 def cp_files(files: Iterable[Path], dest: Path) -> None:

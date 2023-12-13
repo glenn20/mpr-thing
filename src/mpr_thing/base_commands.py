@@ -25,10 +25,12 @@ from pathlib import Path
 from traceback import print_exc
 from typing import Any, Iterable
 
-from .board import MPBoard
+from mpremote_path import Board
+from mpremote_path import MPRemotePath as MPath
+
+from . import pathfun
 from .catcher import catcher
 from .colour import AnsiColour
-from .pathfun import slashify
 
 # Type alias for the list of command arguments
 Argslist = list[str]
@@ -71,7 +73,7 @@ class BaseCommands(cmd.Cmd):
     # Commands that have no completion
     noglob_cmds = ("eval", "exec", "alias", "unalias", "set")
 
-    def __init__(self, board: MPBoard):
+    def __init__(self, board: Board):
         self.initialised = False
         self.colour = AnsiColour()
         self.multi_cmd_mode = False
@@ -102,6 +104,7 @@ class BaseCommands(cmd.Cmd):
         self.history_file = os.path.expanduser(HISTORY_FILE)
         if os.path.isfile(self.history_file):
             readline.read_history_file(self.history_file)
+        MPath.connect(self.board)
 
     def load_command_file(self, file: str) -> bool:
         'Read commands from "file" first in home folder then local folder.'
@@ -124,7 +127,6 @@ class BaseCommands(cmd.Cmd):
         return False
 
     def initialise(self) -> None:
-        self.board.load_helper()
         if self.initialised:
             return
         self.initialised = True
@@ -133,7 +135,7 @@ class BaseCommands(cmd.Cmd):
         self.load_command_file(RC_FILE)
 
     def reset(self) -> None:
-        self.board.reset()
+        pass
 
     def load_board_params(self) -> None:
         "Initialise the board parameters - used in the longform prompt"
@@ -262,21 +264,22 @@ class BaseCommands(cmd.Cmd):
             os.chdir(args[1])
             return
         with tempfile.TemporaryDirectory() as tmpdir:
-            names: list[tuple[str, Path]] = []
+            names: list[tuple[MPath, Path]] = []
             new_args: list[str] = []
             for arg in args:
                 if arg.startswith(":"):
-                    basename = Path(arg[1:]).name
-                    dest = Path(tmpdir) / basename
-                    self.board.get(arg[1:], tmpdir)
-                    names.append((arg[1:], dest))
-                    new_args.append(str(dest))
+                    src, dst = MPath(arg[1:]), Path(tmpdir)
+                    dst = pathfun.copy_into_dir(src, dst)
+                    if dst is None:
+                        raise ValueError(f"Error copying {src!r} to {dst!r}")
+                    names.append((src, dst))
+                    new_args.append(str(dst))
                 else:
                     new_args.append(arg)
 
             os.system(" ".join(new_args))
-            # for arg, dest in names:
-            #     remote.board.put(str(dest), arg)
+            # for src, dest in names:
+            #     remote.board.put(str(dest), src)
 
     def do_alias(self, args: Argslist) -> None:
         """
@@ -391,6 +394,7 @@ class BaseCommands(cmd.Cmd):
                 self.colour.spec.update(self.lsspec)
             elif key == "debug":
                 self.board.debug = int(value)  # type: ignore
+                self.board.board.debug = int(value)  # type: ignore
             else:
                 print("%set: unknown key:", key)
         self.save_options()
@@ -475,7 +479,7 @@ class BaseCommands(cmd.Cmd):
             # User typed '%%': Enter command line mode
             print(
                 'Enter magic commands (try "help" for a list)\n'
-                'Type "quit" or ctrl-D to return to micropython:'
+                'Type "quit" or ctrl-D to return to micropython repl:'
             )
             self.multi_cmd_mode = True
             return not self.multi_cmd_mode
@@ -524,7 +528,7 @@ class BaseCommands(cmd.Cmd):
         sep = word.rfind("/")
         pre, post = word[: sep + 1], word[sep + 1 :]
         files = Path(pre or ".").expanduser().glob(post + "*")
-        return sorted([slashify(f) for f in files])
+        return sorted([pathfun.slashify(f) for f in files])
 
     def complete_remote(self, word: str) -> Argslist:
         # Complete names starting with ":" as local files.
@@ -533,7 +537,7 @@ class BaseCommands(cmd.Cmd):
         # Execute filename completion on the board.
         sep = word.rfind("/")
         pre, post = word[: sep + 1], word[sep + 1 :]
-        lsdir = self.board.ls_dir(pre or ".")
+        lsdir = (str(f) for f in MPath(pre or ".").iterdir())
         return [pre + f for f in lsdir if f.startswith(post)]
 
     def complete_params(self, word: str) -> Argslist:
@@ -573,7 +577,7 @@ class BaseCommands(cmd.Cmd):
             return []
         sep = word.rfind("/")
         dir1, word = word[: sep + 1] or ".", word[sep + 1 :]
-        files = self.board.ls_dir(dir1) or []
+        files = (str(f) for f in MPath(dir1).iterdir())
         return (  # Just return the generator
             ("" if dir1 == "." else dir1) + str(f)
             for f in files
@@ -637,7 +641,7 @@ class BaseCommands(cmd.Cmd):
             )
             # Get args for the first subcommand
             args = next(argslist) if args[0] != ";" else []
-            # Push the rest of the args back onto the cmd queue
+            # Push the rest of the args onto the front of the cmd queue
             self.cmdqueue[0:0] = list(argslist)  # type: ignore
             return args
 

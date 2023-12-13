@@ -13,6 +13,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from typing import Iterable
 
 from mpremote_path import MPRemotePath as MPath
 
@@ -65,28 +66,30 @@ class RemoteCmd(BaseCommands):
         The file listing will be colourised the same as "ls --color". Use the
         "set" command to add or change the file listing colours."""
         opts, args = self._options(args)
-        listing = iter(self.board.ls(args or ["."], opts))
-        # The first entry is the listing of the files on the command line
-        dirs, files, missing = pathfun.split(next(listing)[1])
-        ndirs = len(list(dirs))
-        for f in missing:
-            print(f"'{f}': No such file or directory.")
-        self.print_files(files, opts)  # Print the files on the command line
-        started, shortform = bool(files), "l" not in opts
-        for directory, subfiles in listing:  # Recursively print directories
-            if "R" in opts or ndirs > 1 or files:
-                if started and shortform:
-                    print()
-                started = shortform
-                print(f"{self.colour.path(directory)}:")
-            self.print_files(subfiles, opts)  # Print files in the directories
+        with self.board.raw_repl():
+            files = map(MPath, args or ["."])
+            listing = iter(pathfun.ls_files(files, "R" in opts.upper()))
+            # The first entry is the listing of the files on the command line
+            dirs, files, missing = pathfun.split(next(listing)[1])
+            ndirs = len(list(dirs))
+            for f in missing:
+                print(f"'{f}': No such file or directory.")
+            self.print_files(files, opts)  # Print the files on the command line
+            started, shortform = bool(files), "l" not in opts
+            for directory, subfiles in listing:  # Recursively print directories
+                if "R" in opts.upper() or ndirs > 1 or files:
+                    if started and shortform:
+                        print()
+                    started = shortform
+                    print(f"{self.colour.path(directory)}:")
+                self.print_files(subfiles, opts)  # Print files in the directories
 
     def do_cat(self, args: Argslist) -> None:
         """
         List the contents of files on the board:
             %cat file [file2 ...]"""
         for arg in args:
-            self.board.cat(arg)
+            print(MPath(arg).read_text(), end="")
 
     def do_edit(self, args: Argslist) -> None:
         """
@@ -95,18 +98,18 @@ class RemoteCmd(BaseCommands):
         """
         for arg in args:
             with tempfile.TemporaryDirectory() as tmpdir:
-                basename = Path(arg).name
-                dest = Path(tmpdir) / basename
-                self.board.get([arg], tmpdir)
-                if 0 == os.system(f"eval ${{EDITOR:-/usr/bin/vi}} {str(dest)}"):
-                    self.board.put([str(dest)], arg)
+                src = MPath(arg)
+                dst = Path(tmpdir) / src.name
+                pathfun.copypath(src, dst)
+                if 0 == os.system(f"eval ${{EDITOR:-/usr/bin/vi}} {str(dst)}"):
+                    pathfun.copypath(dst, src)
 
     def do_touch(self, args: Argslist) -> None:
         """
         Create a file on the board:
             %touch file [file2 ...]"""
         for arg in args:
-            self.board.touch(arg)
+            MPath(arg).touch()
 
     def do_mv(self, args: Argslist) -> None:
         """
@@ -114,8 +117,9 @@ class RemoteCmd(BaseCommands):
             %mv old new
             %mv *.py /app"""
         opts, args = self._options(args)
-        dest = args.pop()
-        self.board.mv(args, dest, opts)
+        src, dst = pathfun.check_files("mv", args[:-1], args[-1], opts)
+        if dst:
+            pathfun.mv_files(src, dst)
 
     def do_cp(self, args: Argslist) -> None:
         """
@@ -123,15 +127,30 @@ class RemoteCmd(BaseCommands):
             %cp [-r] existing new
             %cp *.py /app"""
         opts, args = self._options(args)
-        dest = args.pop()
-        self.board.cp(args, dest, opts)
+        src, dst = pathfun.check_files("cp", args[:-1], args[-1], opts)
+        if dst:
+            pathfun.cp_files(src, dst)
 
     def do_rm(self, args: Argslist) -> None:
         """
         Delete files from the board:
             %rm [-r] file1 [file2 ...]"""
         opts, args = self._options(args)
-        self.board.rm(args, opts)
+
+        def rm_files(files: Iterable[MPath], opts: str) -> None:
+            for f in files:
+                if f.is_file():
+                    if "q" not in opts:
+                        print(f"{str(f)}")
+                    f.unlink()
+                elif f.is_dir():
+                    if "r" in opts:
+                        rm_files(f.iterdir(), opts)
+                    if "q" not in opts:
+                        print(f"{str(f)}/")
+                    f.rmdir()
+
+        rm_files(map(MPath, args), opts)
 
     def _is_remote(self, filename: str, pwd: str) -> bool:
         "Is the file on a remote mounted filesystem."
@@ -155,7 +174,7 @@ class RemoteCmd(BaseCommands):
             else:
                 files.append(f)
         dest = files.pop()[1:] if files[-1].startswith(":") else "."
-        self.board.get(files, dest, opts + "rv")
+        pathfun.cp_files((MPath(f) for f in files), Path(dest))
 
     def do_put(self, args: Argslist) -> None:
         """
@@ -172,7 +191,7 @@ class RemoteCmd(BaseCommands):
         if self._is_remote(dest, pwd):
             print(f"%put: do not put files into /remote mounted folder: {pwd}")
             return
-        self.board.put(args, dest, opts + "rv")
+        pathfun.cp_files((Path(f) for f in args), MPath(dest))
 
     # Directory commands
     def do_cd(self, args: Argslist) -> None:
@@ -180,7 +199,7 @@ class RemoteCmd(BaseCommands):
         Change the current directory on the board (with os.setpwd()):
             %cd /lib"""
         arg = args[0] if args else "/"
-        self.board.cd(arg)
+        print(MPath(arg).chdir())
 
     def do_pwd(self, args: Argslist) -> None:
         """
@@ -188,7 +207,7 @@ class RemoteCmd(BaseCommands):
             %pwd"""
         if args:
             print("pwd: unexpected args:", args)
-        print(self.board.pwd())
+        print(MPath.cwd())
 
     def do_lcd(self, args: Argslist) -> None:
         """
@@ -208,14 +227,14 @@ class RemoteCmd(BaseCommands):
         Create a new directory on the board:
             %mkdir /test"""
         for arg in args:
-            self.board.mkdir(arg)
+            MPath(arg).mkdir()
 
     def do_rmdir(self, args: Argslist) -> None:
         """
         Delete/remove a directory on the board (if it is empty)
             %rmdir /test"""
         for arg in args:
-            self.board.rmdir(arg)
+            MPath(arg).rmdir()
 
     # Execute code on the board
     def do_exec(self, args: Argslist) -> None:
@@ -232,17 +251,16 @@ class RemoteCmd(BaseCommands):
         """
         Eval and print the python code on the board, eg.:
             %eval 34 * 35"""
-        response = self.board.exec(f"print({' '.join(args)})")
+        response = self.board.eval(" ".join(args))
         print(response)
 
     def do_run(self, args: Argslist) -> None:
         """
-        Load and run local python files onto the board:
+        Load and run local python files on the board:
             %run file1.py [file2.py ...]"""
         for arg in args:
             try:
-                with open(arg, encoding="utf-8") as f:
-                    buf = f.read()
+                buf = Path(arg).read_text()
             except OSError as err:
                 print(OSError, err)
             else:
@@ -281,7 +299,7 @@ class RemoteCmd(BaseCommands):
             %time set utc   : Set the RTC clock on the board from UTC time
             %time           : Print the RTC clock time on the board"""
         if args and args[0] == "set":
-            self.board.board.check_time(sync_clock=True, utc="utc" in args)
+            self.board.check_time(set_clock=True, utc="utc" in args)
         time_list = self.board.eval("time.localtime()") + (-1,)  # is_dst = unknown
         print(time.asctime(time.struct_time(time_list)))
 
@@ -294,10 +312,10 @@ class RemoteCmd(BaseCommands):
         opts, args = self._options(args)
         path = Path(args[0] if args else ".").resolve()
         if path.is_dir():
-            with self.board.board.raw_repl() as r:
+            with self.board.raw_repl() as r:
                 r.mount_local(str(path), unsafe_links="l" in opts)
             print(f"Mounted local folder {args} on /remote")
-            self.board.exec("print(os.getcwd())")
+            print(MPath.cwd())
         else:
             print("%mount: No such directory:", path)
 
@@ -307,11 +325,10 @@ class RemoteCmd(BaseCommands):
             %umount"""
         if args:
             print("umount: unexpected args:", args)
-        self.board.umount()
         if str(MPath.cwd()).startswith("/remote"):
             MPath("/").chdir()
             print(MPath.cwd())
-        with self.board.board.raw_repl() as r:
+        with self.board.raw_repl() as r:
             r.umount_local()
         print("Unmounted /remote")
 
@@ -326,7 +343,10 @@ class RemoteCmd(BaseCommands):
         """
         Print the free and used flash storage:
             %df [dir1, dir2, ...]"""
-        df_list = self.board.df(args)
+        df_list: list[tuple[str, int, int, int]] = []
+        for d in args or ["/"]:
+            _, bsz, tot, free, *_ = self.board.eval(f"os.statvfs({str(d)!r})")
+            df_list.append((str(d), tot * bsz, (tot - free) * bsz, free * bsz))
         print(
             f"{'':10} {'Bytes':>9} {'Used':>9} "
             f"{'Available':>9} {'Use':>3}% {'Mounted on'}"
@@ -342,6 +362,8 @@ class RemoteCmd(BaseCommands):
             %gc"""
         if args:
             print("gc: unexpected args:", args)
-        before, after = self.board.gc()
+        before, after = self.board.exec_eval(
+            "import gc;_b=gc.mem_free();gc.collect();print([_b,gc.mem_free()])"
+        )
         print("Before GC: Free bytes =", before)
         print("After  GC: Free bytes =", after)
