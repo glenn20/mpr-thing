@@ -108,7 +108,7 @@ class AnsiColour:
     # Return a colour decorated filename
     def pathname(self, file: Path, reset: str = "0") -> str:
         """Return "file" colourised according to the colour "ls" command."""
-        name = file.name
+        name = file.name or str(file)
         return (
             self.dir(name, reset=reset)
             if file.is_dir()
