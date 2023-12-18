@@ -66,10 +66,10 @@ class RemoteCmd(BaseCommands):
             %ls [-[lR]] [file_or_dir1 ...]
         The file listing will be colourised the same as "ls --color". Use the
         "set" command to add or change the file listing colours."""
-        opts, args = self._options(args or ["."])
+        opts, args = self._options(args)
         recursive = "R" in opts.upper()
         with self.board.raw_repl():  # Avoid jumping in and out of raw repl
-            dirlist = iter(pathfun.dirlist(map(MPath, args), recursive))
+            dirlist = iter(pathfun.dirlist(map(MPath, args or ["."]), recursive))
             # The first entry is the listing of the files on the command line
             dirs, files, missing = pathfun.split_files(next(dirlist)[1])
             for f in missing:
@@ -87,28 +87,31 @@ class RemoteCmd(BaseCommands):
         """
         List the contents of files on the board:
             %cat file [file2 ...]"""
-        for arg in args:
-            print(MPath(arg).read_text(), end="")
+        with self.board.raw_repl():
+            for arg in args:
+                print(MPath(arg).read_text(), end="")
 
     def do_edit(self, args: Argslist) -> None:
         """
         Copy a file from the board, open it in your editor, then copy it back:
             %edit file1 [file2 ...]
         """
-        for arg in args:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                src = MPath(arg)
-                dst = Path(tmpdir) / src.name
-                pathfun.copypath(src, dst)
-                if 0 == os.system(f"eval ${{EDITOR:-/usr/bin/vi}} {str(dst)}"):
-                    pathfun.copypath(dst, src)
+        with self.board.raw_repl():
+            for arg in args:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    src = MPath(arg)
+                    dst = Path(tmpdir) / src.name
+                    pathfun.copypath(src, dst)
+                    if 0 == os.system(f"eval ${{EDITOR:-/usr/bin/vi}} {str(dst)}"):
+                        pathfun.copypath(dst, src)
 
     def do_touch(self, args: Argslist) -> None:
         """
         Create a file on the board:
             %touch file [file2 ...]"""
-        for arg in args:
-            MPath(arg).touch()
+        with self.board.raw_repl():
+            for arg in args:
+                MPath(arg).touch()
 
     def do_mv(self, args: Argslist) -> None:
         """
@@ -116,10 +119,11 @@ class RemoteCmd(BaseCommands):
             %mv old new
             %mv *.py /app"""
         opts, args = self._options(args)
-        files, dest = (MPath(f) for f in args[:-1]), MPath(args[-1])
-        src, dst = pathfun.check_files("mv", files, dest, opts)
-        if dst:
-            pathfun.mv_files(src, dst)
+        with self.board.raw_repl():
+            files, dest = (MPath(f) for f in args[:-1]), MPath(args[-1])
+            src, dst = pathfun.check_files("mv", files, dest, opts)
+            if dst:
+                pathfun.mv_files(src, dst)
 
     def do_cp(self, args: Argslist) -> None:
         """
@@ -127,10 +131,11 @@ class RemoteCmd(BaseCommands):
             %cp [-r] existing new
             %cp *.py /app"""
         opts, args = self._options(args)
-        files, dest = (MPath(f) for f in args[:-1]), MPath(args[-1])
-        src, dst = pathfun.check_files("cp", files, dest, opts)
-        if dst:
-            pathfun.cp_files(src, dst)
+        with self.board.raw_repl():
+            files, dest = (MPath(f) for f in args[:-1]), MPath(args[-1])
+            src, dst = pathfun.check_files("cp", files, dest, opts)
+            if dst:
+                pathfun.cp_files(src, dst)
 
     def do_rm(self, args: Argslist) -> None:
         """
@@ -151,7 +156,8 @@ class RemoteCmd(BaseCommands):
                         print(f"{str(f)}/")
                     f.rmdir()
 
-        rm_files(map(MPath, args), opts)
+        with self.board.raw_repl():
+            rm_files(map(MPath, args), opts)
 
     def _is_remote(self, filename: str, pwd: str) -> bool:
         "Is the file on a remote mounted filesystem."
@@ -166,16 +172,17 @@ class RemoteCmd(BaseCommands):
         If the last argument start with ":" use that as the destination folder.
         """
         opts, args = self._options(args)
-        self.load_board_params()
-        pwd: str = self.params["pwd"]
-        files: list[str] = []
-        for f in args:
-            if not f.startswith(":") and self._is_remote(f, pwd):
-                print("get: skipping files in /remote mounted folder:", f)
-            else:
-                files.append(f)
-        dest = files.pop()[1:] if files[-1].startswith(":") else "."
-        pathfun.cp_files((MPath(f) for f in files), Path(dest))
+        with self.board.raw_repl():
+            self.load_board_params()
+            pwd: str = self.params["pwd"]
+            files: list[str] = []
+            for f in args:
+                if not f.startswith(":") and self._is_remote(f, pwd):
+                    print("get: skipping files in /remote mounted folder:", f)
+                else:
+                    files.append(f)
+            dest = files.pop()[1:] if files[-1].startswith(":") else "."
+            pathfun.cp_files((MPath(f) for f in files), Path(dest))
 
     def do_put(self, args: Argslist) -> None:
         """
@@ -186,13 +193,14 @@ class RemoteCmd(BaseCommands):
         opts, args = self._options(args)
         if not args:
             print("%put: Must provide at least one file or directory to copy.")
-        self.load_board_params()
-        pwd: str = self.params["pwd"]
-        dest = args.pop()[1:] if args[-1].startswith(":") else pwd
-        if self._is_remote(dest, pwd):
-            print(f"%put: do not put files into /remote mounted folder: {pwd}")
-            return
-        pathfun.cp_files((Path(f) for f in args), MPath(dest))
+        with self.board.raw_repl():
+            self.load_board_params()
+            pwd: str = self.params["pwd"]
+            dest = args.pop()[1:] if args[-1].startswith(":") else pwd
+            if self._is_remote(dest, pwd):
+                print(f"%put: do not put files into /remote mounted folder: {pwd}")
+                return
+            pathfun.cp_files((Path(f) for f in args), MPath(dest))
 
     # Directory commands
     def do_cd(self, args: Argslist) -> None:
@@ -345,9 +353,10 @@ class RemoteCmd(BaseCommands):
         Print the free and used flash storage:
             %df [dir1, dir2, ...]"""
         df_list: list[tuple[str, int, int, int]] = []
-        for d in args or ["/"]:
-            _, bsz, tot, free, *_ = self.board.eval(f"os.statvfs({str(d)!r})")
-            df_list.append((str(d), tot * bsz, (tot - free) * bsz, free * bsz))
+        with self.board.raw_repl():
+            for d in args or ["/"]:
+                _, bsz, tot, free, *_ = self.board.eval(f"os.statvfs({str(d)!r})")
+                df_list.append((str(d), tot * bsz, (tot - free) * bsz, free * bsz))
         print(
             f"{'':10} {'Bytes':>9} {'Used':>9} "
             f"{'Available':>9} {'Use':>3}% {'Mounted on'}"
