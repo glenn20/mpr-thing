@@ -20,6 +20,7 @@ import re
 import readline
 import shlex
 import shutil
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -295,7 +296,7 @@ class BaseCommands(cmd.Cmd):
             os.chdir(args[1])
             return
         with tempfile.TemporaryDirectory() as tmpdir:
-            names: list[tuple[MPath, Path]] = []
+            files: list[tuple[MPath, Path]] = []
             new_args: list[str] = []
             for arg in args:
                 if arg.startswith(":"):
@@ -303,14 +304,20 @@ class BaseCommands(cmd.Cmd):
                     dst = pathfun.copy_into_dir(src, dst)
                     if dst is None:
                         raise ValueError(f"Error copying {src!r} to {dst!r}")
-                    names.append((src, dst))
+                    files.append((src, dst))
                     new_args.append(str(dst))
                 else:
                     new_args.append(arg)
 
-            os.system(" ".join(new_args))
-            # for src, dest in names:
-            #     remote.board.put(str(dest), src)
+            if (shell := os.getenv("SHELL")) is None:
+                subprocess.run(new_args, shell=True, check=True)
+            else:
+                # Use an interactive shell to run the command
+                subprocess.run([shell, "-ic", " ".join(new_args)], check=True)
+            # os.system(" ".join(new_args))
+            # Copy modified files back to the board
+            # for src, dest in files:
+            #     pathfun.copyfile(dst, src)
 
     def do_alias(self, args: Argslist) -> None:
         """
