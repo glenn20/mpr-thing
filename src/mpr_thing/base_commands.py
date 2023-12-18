@@ -29,7 +29,6 @@ from mpremote_path import Board
 from mpremote_path import MPRemotePath as MPath
 
 from . import pathfun
-from .catcher import catcher
 from .colour import AnsiColour
 
 # Type alias for the list of command arguments
@@ -38,6 +37,34 @@ Argslist = list[str]
 HISTORY_FILE = "~/.mpr-thing.history"
 OPTIONS_FILE = ".mpr-thing.options"
 RC_FILE = ".mpr-thing.rc"
+
+
+# A context manager to catch exceptions from mpremote SerialTransport and others
+class catcher:
+    """Catch and report exceptions commonly raised by the mpr-thing tool.
+    Eg.
+        with catcher():
+            id = board.eval("unique_id()")"""
+
+    nested_depth = 0
+
+    def __enter__(self):
+        catcher.nested_depth += 1
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
+        catcher.nested_depth -= 1
+        if exc_type is KeyboardInterrupt:
+            print("Keyboard Interrupt.")
+            if catcher.nested_depth > 0:
+                return False  # Propagate the exception to the top-level catcher
+        if exc_type in (OSError, FileNotFoundError):
+            print(f"{exc_type.__name__}: {exc_value}")
+        elif exc_type is Exception:
+            print("Error:: ", end="")
+            print(f"{exc_type.__name__}: {exc_value}")
+            print(traceback)
+        return True
 
 
 # Support for the interactive command line interpreter for running shell-like
