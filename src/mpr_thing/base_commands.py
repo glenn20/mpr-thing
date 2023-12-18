@@ -19,7 +19,6 @@ import os
 import re
 import readline
 import shlex
-import shutil
 import subprocess
 import tempfile
 import time
@@ -249,43 +248,6 @@ class BaseCommands(cmd.Cmd):
             )
             + self.colour.ansi(self.command_colour)
         )
-
-    def print_files(self, files: Iterable[Path], opts: str) -> None:
-        """Print a file listing (long or short style) from data returned
-        from the board."""
-        # Pretty printing for files on the board
-        files = list(files)
-        if not files:
-            return
-        columns = shutil.get_terminal_size().columns
-        if "l" in opts:
-            # Long listing style - data is a list of filenames
-            for f in files:
-                st = f.stat()
-                size = st.st_size if not f.is_dir() else 0
-                t = time.strftime("%c", time.localtime(st.st_mtime)).replace(" 0", "  ")
-                filename = self.colour.pathname(f)
-                print(f"{size:9d} {t[:-3]} {filename}")
-        else:
-            # Short listing style - data is a list of filenames
-            if len(files) < 20 and sum(len(f.name) + 2 for f in files) < columns:
-                # Print all on one line
-                for f in files:
-                    print(self.colour.pathname(f), end="  ")
-                print("")
-            else:
-                # Print in columns - by row
-                w = max(len(f.name) for f in files) + 2
-                spaces = " " * w
-                cols = columns // w
-                for i, f in enumerate(files):
-                    n = i + 1
-                    print(
-                        self.colour.pathname(f),
-                        spaces[len(f.name) :],
-                        sep="",
-                        end=("" if n % cols and n < len(files) else "\n"),
-                    )
 
     def do_include(self, args: Argslist) -> None:
         for arg in args:
