@@ -120,6 +120,7 @@ class BaseCommands(cmd.Cmd):
         self.params: dict[str, Any] = {}  # Params we can use in prompt
         self.names: dict[str, str] = {}  # Map device unique_ids to names
         self.lsspec: dict[str, str] = {}  # Extra colour specs for %ls
+        self.cmd_time: int = 0  # Time to execute command on board
         readline.set_completer_delims(" \t\n>;")
 
         # Cmd.cmdloop() overrides completion settings in ~/.inputrc
@@ -190,6 +191,7 @@ class BaseCommands(cmd.Cmd):
             self.params.update(self.board.eval('eval(f"dict{os.uname()}")'))
         unique_id = self.params.get("unique_id", "")
         self.params["id"] = unique_id[-8:]  # Last 3 octets
+        self.params["time_ms"] = self.cmd_time
         # Add the ansi colour names
         self.params.update({c: self.colour.ansi(c) for c in self.colour.colour})
 
@@ -215,6 +217,7 @@ class BaseCommands(cmd.Cmd):
         self.params["free_delta"] = free_delta
         self.params["free"] = free
         self.params["free_pc"] = free_pc
+        self.params["time_ms"] = self.cmd_time
         self.params["lcd"] = os.getcwd()
         self.params["lcd3"] = "/".join(os.getcwd().rsplit("/", 3)[1:])
         self.params["lcd2"] = "/".join(os.getcwd().rsplit("/", 2)[1:])
@@ -511,6 +514,8 @@ class BaseCommands(cmd.Cmd):
             {bold/normal/underline/reverse}: insert an ANSI text sequence
             {pwd}: current working directory on board
             {free/_pc}: the current free heap memory in bytes/percentage
+            {free_delta}: the change in free heap memory during last command
+            {time_ms}: time taken to execute last command in milliseconds
             {lcdn}: last n parts of local working directory
             {name}: name of current board or {id} if name is not set
 
@@ -708,6 +713,7 @@ class BaseCommands(cmd.Cmd):
     def onecmd(self, line: str) -> bool:
         """Override the default Cmd.onecmd()."""
         print(f"{self.colour.ansi('reset')}", end="", flush=True)
+        start_time = time.perf_counter()
         if isinstance(line, list):
             # List of str is pushed back onto cmdqueue in self.split()
             args = line
@@ -738,6 +744,7 @@ class BaseCommands(cmd.Cmd):
             ret: bool = func(args)
         else:
             ret = self.default(" ".join([command, *args]))
+        self.cmd_time = round((time.perf_counter() - start_time) * 1000)
         return ret
 
     def postcmd(self, stop: Any, line: str) -> bool:
@@ -766,4 +773,5 @@ class BaseCommands(cmd.Cmd):
         self.shell_mode = False
 
     def emptyline(self) -> bool:  # Else empty lines repeat last command
+        self.cmd_time = 0
         return not self.multi_cmd_mode
