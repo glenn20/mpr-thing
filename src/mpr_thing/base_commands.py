@@ -14,6 +14,7 @@ import glob
 import inspect
 import itertools
 import json
+import logging
 import os
 import re
 import readline
@@ -132,6 +133,9 @@ class BaseCommands(cmd.Cmd):
         if os.path.isfile(self.history_file):
             readline.read_history_file(self.history_file)
         MPath.connect(self.board)
+        self.logging = str(
+            logging.getLevelName(logging.getLogger().getEffectiveLevel())
+        ).lower()
 
     def load_command_file(self, file: str) -> bool:
         'Read commands from "file" first in home folder then local folder.'
@@ -353,7 +357,7 @@ class BaseCommands(cmd.Cmd):
             print(f'set name="{self.names[self.params["unique_id"]]}"')
             print(f"set names='{json.dumps(self.names)}'")
             print(f"set lscolour='{json.dumps(self.lsspec)}'")
-            print(f'set debug="{self.board.debug}"')
+            print(f'set logging="{self.logging}"')
             return
 
         for arg in args:
@@ -419,9 +423,12 @@ class BaseCommands(cmd.Cmd):
                         continue
                     self.lsspec[k.lstrip("*")] = v
                 self.colour.spec.update(self.lsspec)
-            elif key == "debug":
-                self.board.debug = int(value)  # type: ignore
-                self.board.board.debug = int(value)  # type: ignore
+            elif key == "logging":
+                for arg in value.split(","):
+                    pair = arg.split("=", maxsplit=1)
+                    name, level = pair if len(pair) == 2 else (None, pair[0])
+                    logging.getLogger(name).setLevel(level.upper())
+                self.logging = value  # type: ignore
             else:
                 print("%set: unknown key:", key)
         self.save_options()
@@ -466,6 +473,10 @@ class BaseCommands(cmd.Cmd):
         Add extra colour specs (as json) for file listing with "ls":
             %set lscolour='{"di": "bold-blue", "*.py": "bold-cyan"}'
             %set lscolor='{"*.pyc": "magenta"}'
+        Enable logging for a module or all modules:
+            %set logging=warning
+            %set logging=debug
+            %set logging=warning,mpremote_path=debug
         """
             )
         )
