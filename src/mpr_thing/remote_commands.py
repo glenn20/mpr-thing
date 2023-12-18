@@ -66,7 +66,7 @@ class RemoteCmd(BaseCommands):
         The file listing will be colourised the same as "ls --color". Use the
         "set" command to add or change the file listing colours."""
         opts, args = self._options(args)
-        with self.board.raw_repl():
+        with self.board.raw_repl():  # Avoid jumping in and out of raw repl
             files = map(MPath, args or ["."])
             listing = iter(pathfun.ls_files(files, "R" in opts.upper()))
             # The first entry is the listing of the files on the command line
@@ -74,7 +74,7 @@ class RemoteCmd(BaseCommands):
             ndirs = len(list(dirs))
             for f in missing:
                 print(f"'{f}': No such file or directory.")
-            self.print_files(files, opts)  # Print the files on the command line
+            pathfun.print_files(files, opts)  # Print the files on the command line
             started, shortform = bool(files), "l" not in opts
             for directory, subfiles in listing:  # Recursively print directories
                 if "R" in opts.upper() or ndirs > 1 or files:
@@ -82,7 +82,7 @@ class RemoteCmd(BaseCommands):
                         print()
                     started = shortform
                     print(f"{self.colour.path(directory)}:")
-                self.print_files(subfiles, opts)  # Print files in the directories
+                pathfun.print_files(subfiles, opts)  # Print files in the directories
 
     def do_cat(self, args: Argslist) -> None:
         """
@@ -117,7 +117,8 @@ class RemoteCmd(BaseCommands):
             %mv old new
             %mv *.py /app"""
         opts, args = self._options(args)
-        src, dst = pathfun.check_files("mv", args[:-1], args[-1], opts)
+        files, dest = (MPath(f) for f in args[:-1]), MPath(args[-1])
+        src, dst = pathfun.check_files("mv", files, dest, opts)
         if dst:
             pathfun.mv_files(src, dst)
 
@@ -127,7 +128,8 @@ class RemoteCmd(BaseCommands):
             %cp [-r] existing new
             %cp *.py /app"""
         opts, args = self._options(args)
-        src, dst = pathfun.check_files("cp", args[:-1], args[-1], opts)
+        files, dest = (MPath(f) for f in args[:-1]), MPath(args[-1])
+        src, dst = pathfun.check_files("cp", files, dest, opts)
         if dst:
             pathfun.cp_files(src, dst)
 
