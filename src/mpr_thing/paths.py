@@ -142,7 +142,7 @@ def check_files(
             if f.is_dir() and f in dest.parents:
                 print(f"%{cmd}: Error: {dest!r} is subfolder of {f!r}")
                 return ([], None)
-            if str(f) == dest:
+            if str(f) == str(dest):
                 print(f"%{cmd}: Error: source is same as dest: {f!r}")
                 return ([], None)
     if dirs and cmd in ["rm", "cp", "get", "put"] and "r" not in opts:

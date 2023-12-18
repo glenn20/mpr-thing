@@ -18,7 +18,7 @@ from typing import Iterable
 
 from mpremote_path import MPRemotePath as MPath
 
-from . import pathfun
+from . import paths
 from .base_commands import Argslist, BaseCommands
 
 
@@ -69,9 +69,9 @@ class RemoteCmd(BaseCommands):
         opts, args = self._options(args)
         recursive = "R" in opts.upper()
         with self.board.raw_repl():  # Avoid jumping in and out of raw repl
-            dirlist = iter(pathfun.dirlist(map(MPath, args or ["."]), recursive))
+            dirlist = iter(paths.dirlist(map(MPath, args or ["."]), recursive))
             # The first entry is the listing of the files on the command line
-            dirs, files, missing = pathfun.split_files(next(dirlist)[1])
+            dirs, files, missing = paths.split_files(next(dirlist)[1])
             for f in missing:
                 print(f"'{f}': No such file or directory.")
             if len(dirs) == 1 and not files and not missing and not recursive:
@@ -79,7 +79,7 @@ class RemoteCmd(BaseCommands):
                 # directory, which is the next entry in the dirlist iterator.
                 _dir, files = next(dirlist)
             dirlist = itertools.chain([(None, files)], dirlist)
-            pathfun.print_ls(
+            paths.print_ls(
                 dirlist, long_style="l" in opts, formatter=self.colour.pathname
             )
 
@@ -101,9 +101,9 @@ class RemoteCmd(BaseCommands):
                 with tempfile.TemporaryDirectory() as tmpdir:
                     src = MPath(arg)
                     dst = Path(tmpdir) / src.name
-                    pathfun.copypath(src, dst)
+                    paths.copypath(src, dst)
                     if 0 == os.system(f"eval ${{EDITOR:-/usr/bin/vi}} {str(dst)}"):
-                        pathfun.copypath(dst, src)
+                        paths.copypath(dst, src)
 
     def do_touch(self, args: Argslist) -> None:
         """
@@ -121,9 +121,9 @@ class RemoteCmd(BaseCommands):
         opts, args = self._options(args)
         with self.board.raw_repl():
             files, dest = (MPath(f) for f in args[:-1]), MPath(args[-1])
-            src, dst = pathfun.check_files("mv", files, dest, opts)
+            src, dst = paths.check_files("mv", files, dest, opts)
             if dst:
-                pathfun.mv_files(src, dst)
+                paths.mv_files(src, dst)
 
     def do_cp(self, args: Argslist) -> None:
         """
@@ -133,9 +133,9 @@ class RemoteCmd(BaseCommands):
         opts, args = self._options(args)
         with self.board.raw_repl():
             files, dest = (MPath(f) for f in args[:-1]), MPath(args[-1])
-            src, dst = pathfun.check_files("cp", files, dest, opts)
+            src, dst = paths.check_files("cp", files, dest, opts)
             if dst:
-                pathfun.cp_files(src, dst)
+                paths.cp_files(src, dst)
 
     def do_rm(self, args: Argslist) -> None:
         """
@@ -182,7 +182,7 @@ class RemoteCmd(BaseCommands):
                 else:
                     files.append(f)
             dest = files.pop()[1:] if files[-1].startswith(":") else "."
-            pathfun.cp_files((MPath(f) for f in files), Path(dest))
+            paths.cp_files((MPath(f) for f in files), Path(dest))
 
     def do_put(self, args: Argslist) -> None:
         """
@@ -200,7 +200,7 @@ class RemoteCmd(BaseCommands):
             if self._is_remote(dest, pwd):
                 print(f"%put: do not put files into /remote mounted folder: {pwd}")
                 return
-            pathfun.cp_files((Path(f) for f in args), MPath(dest))
+            paths.cp_files((Path(f) for f in args), MPath(dest))
 
     # Directory commands
     def do_cd(self, args: Argslist) -> None:

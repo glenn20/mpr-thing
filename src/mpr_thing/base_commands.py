@@ -29,7 +29,7 @@ from typing import Any, Iterable
 from mpremote_path import Board
 from mpremote_path import MPRemotePath as MPath
 
-from . import pathfun
+from . import paths
 from .colour import AnsiColour
 
 # Type alias for the list of command arguments
@@ -266,7 +266,7 @@ class BaseCommands(cmd.Cmd):
             for arg in args:
                 if arg.startswith(":"):
                     src, dst = MPath(arg[1:]), Path(tmpdir)
-                    dst = pathfun.copy_into_dir(src, dst)
+                    dst = paths.copy_into_dir(src, dst)
                     if dst is None:
                         raise ValueError(f"Error copying {src!r} to {dst!r}")
                     files.append((src, dst))
@@ -540,7 +540,7 @@ class BaseCommands(cmd.Cmd):
         sep = word.rfind("/")
         pre, post = word[: sep + 1], word[sep + 1 :]
         files = Path(pre or ".").expanduser().glob(post + "*")
-        return sorted([pathfun.slashify(f) for f in files])
+        return sorted([paths.slashify(f) for f in files])
 
     def complete_remote(self, word: str) -> Argslist:
         # Complete names starting with ":" as local files.
