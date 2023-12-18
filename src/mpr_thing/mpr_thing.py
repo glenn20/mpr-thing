@@ -20,6 +20,8 @@ from .remote_commands import RemoteCmd
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
+LOGGING_CONFIG_FILE = "logging.yaml"
+
 
 def hard_reset(transport: SerialTransport) -> None:
     "Toggle DTR on the serial port to force a hardware reset of the board."
@@ -76,7 +78,7 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
     at_prompt, beginning_of_line, prompt_char_count = False, False, 0
     prompt = b"\n>>> "
     transport: SerialTransport = state.transport  # type: ignore
-    remote = RemoteCmd(Board(transport))
+    remote = RemoteCmd(Board(transport, console_out_write))
 
     while True:
         console_in.waitchar(transport.serial)
@@ -172,8 +174,10 @@ mpremote_repl.do_repl_main_loop = my_do_repl_main_loop
 
 
 def main() -> int:
-    # Set locale for file listings, etc.
-    locale.setlocale(locale.LC_ALL, "")
+    import logging
+
+    locale.setlocale(locale.LC_ALL, "")  # Set locale for file listings, etc.
+    logging.basicConfig(format="%(levelname)s %(message)s", level=logging.WARNING)
 
     return mpremote.main.main()  # type: ignore
 
