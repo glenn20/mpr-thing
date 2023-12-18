@@ -1,4 +1,3 @@
-import itertools
 import shutil
 import time
 from pathlib import Path
@@ -6,7 +5,8 @@ from typing import Callable, Iterable
 
 from mpremote_path import MPRemotePath as MPath
 
-Dirlist = Iterable[tuple[Path, Iterable[Path]]]
+Dirfiles = tuple[Path | None, Iterable[Path]]
+Dirlist = Iterable[Dirfiles]
 
 max_depth = 20
 
@@ -18,78 +18,102 @@ def slashify(path: Path | str) -> str:
     return s + "/" if add_slash else s
 
 
-def split(
+def split_files(
     files: Iterable[Path],
-) -> tuple[Iterable[Path], Iterable[Path], Iterable[Path]]:
+) -> tuple[list[Path], list[Path], list[Path]]:
     """Split files into directories, files and missing."""
-    dirs, files, missing = itertools.tee(files, 3)
+    all = list(files)
     return (
-        (f for f in dirs if f.is_dir()),
-        (f for f in files if f.is_file()),
-        (f for f in missing if not f.exists()),
+        [f for f in all if f.is_dir()],  # Directories
+        [f for f in all if f.is_file()],  # Files
+        [f for f in all if not f.exists()],  # Missing files
     )
 
 
-def ls_dir(path: Path, depth: int = max_depth) -> Dirlist:
+def dirlist_dir(path: Path, depth: int = max_depth) -> Dirlist:
     """Return a directory list of `path` (must be directory) up to `depth` deep.
     If `depth` is 0, only the top level directory is listed."""
     if path.is_dir():
-        files = [f for f in path.iterdir()]
+        files = sorted(path.iterdir())
         yield (path, files)
         if depth > 0:
             for child in (f for f in files if f.is_dir()):
-                yield from ls_dir(child, depth - 1)
+                yield from dirlist_dir(child, depth - 1)
+
+
+def dirlist(files: Iterable[Path], recursive: bool = False) -> Dirlist:
+    files = sorted(files)
+    yield (None, files)
+    for f in (f for f in files if f.is_dir()):
+        yield from dirlist_dir(f, max_depth if recursive else 0)
 
 
 def default_formatter(path: Path) -> str:
     return path.name
 
 
-def print_files(
-    files: Iterable[Path],
-    opts: str,
+def print_ls_long(
+    dirlist: Dirlist,
     formatter: Callable[[Path], str] = default_formatter,
 ) -> None:
-    """Print a file listing (long or short style) from data returned
-    from the board."""
-    # Pretty printing for files on the board
-    files = list(files)
-    if not files:
-        return
-    columns = shutil.get_terminal_size().columns
-    if "l" in opts:
-        # Long listing style - data is a list of filenames
+    """Print a long-style file listing from a `Dirlist`."""
+    for directory, files in dirlist:
+        if directory:
+            print(f"{formatter(directory)}:")
         for f in files:
             st = f.stat()
             size = st.st_size if not f.is_dir() else 0
             t = time.strftime("%c", time.localtime(st.st_mtime)).replace(" 0", "  ")
             print(f"{size:9d} {t[:-3]} {formatter(f)}")
-    else:
-        # Short listing style - data is a list of filenames
-        if len(files) < 20 and sum(len(f.name) + 2 for f in files) < columns:
+
+
+def print_ls_short(
+    dirlist: Dirlist,
+    formatter: Callable[[Path], str] = default_formatter,
+) -> None:
+    """Print a short-style file listing from a `Dirlist`."""
+    started = False
+    columns = shutil.get_terminal_size().columns
+    for directory, files in dirlist:
+        files = list(files)
+        if started:
+            print()  # Add a blank line between directory listings
+        if directory:  # The first entry is None signifying the top level file list
+            print(f"{formatter(directory)}:")
+            started = True
+        if not files:
+            pass
+        elif len(files) < 20 and sum(len(f.name) + 2 for f in files) < columns:
             # Print all on one line
-            for f in files:
-                print(formatter(f), end="  ")
-            print("")
+            print("  ".join(formatter(f) for f in files))
+            started = True
         else:
             # Print in columns - by row
             w = max(len(f.name) for f in files) + 2
-            spaces = " " * w
+            spaces = " " * (w - 1)
             cols = columns // w
             for i, f in enumerate(files, start=1):
-                print(
-                    formatter(f),
-                    spaces[len(f.name) :],
-                    sep="",
-                    end=("" if i % cols and i < len(files) else "\n"),
-                )
+                print(formatter(f), spaces[len(f.name) :], end="")
+                if i % cols == 0 or i == len(files):
+                    print()
+                started = True
 
 
-def ls_files(files: Iterable[Path], recursive: bool = False) -> Dirlist:
-    files = list(files)
-    yield (Path(), files)
-    for f in (f for f in files if f.is_dir()):
-        yield from ls_dir(f, max_depth if recursive else 0)
+def print_ls(
+    dirlist: Dirlist,
+    long_style: bool = False,
+    formatter: Callable[[Path], str] = default_formatter,
+) -> None:
+    """Print a file listing (just the names) from `dirlist`.
+    - `dirlist` is an iterable like: `[(dir1, [file1,...]),...]`, where `dirX`
+      and `fileX` are instances of `Path`.
+    - `long_listing` (bool): if `True`, print a long-style file listing.
+    - `formatter` is a function that takes a `Path` and returns a string. Eg.
+      this is used to colourise the filenames in thne output."""
+    if long_style:
+        print_ls_long(dirlist, formatter)
+    else:
+        print_ls_short(dirlist, formatter)
 
 
 def skip_file(src: Path, dst: Path) -> bool:

@@ -9,6 +9,7 @@
 # Allow list[str] instead of List[str]
 from __future__ import annotations
 
+import itertools
 import os
 import tempfile
 import time
@@ -65,24 +66,22 @@ class RemoteCmd(BaseCommands):
             %ls [-[lR]] [file_or_dir1 ...]
         The file listing will be colourised the same as "ls --color". Use the
         "set" command to add or change the file listing colours."""
-        opts, args = self._options(args)
+        opts, args = self._options(args or ["."])
+        recursive = "R" in opts.upper()
         with self.board.raw_repl():  # Avoid jumping in and out of raw repl
-            files = map(MPath, args or ["."])
-            listing = iter(pathfun.ls_files(files, "R" in opts.upper()))
+            dirlist = iter(pathfun.dirlist(map(MPath, args), recursive))
             # The first entry is the listing of the files on the command line
-            dirs, files, missing = pathfun.split(next(listing)[1])
-            ndirs = len(list(dirs))
+            dirs, files, missing = pathfun.split_files(next(dirlist)[1])
             for f in missing:
                 print(f"'{f}': No such file or directory.")
-            pathfun.print_files(files, opts)  # Print the files on the command line
-            started, shortform = bool(files), "l" not in opts
-            for directory, subfiles in listing:  # Recursively print directories
-                if "R" in opts.upper() or ndirs > 1 or files:
-                    if started and shortform:
-                        print()
-                    started = shortform
-                    print(f"{self.colour.path(directory)}:")
-                pathfun.print_files(subfiles, opts)  # Print files in the directories
+            if len(dirs) == 1 and not files and not missing and not recursive:
+                # If only one directory provided, just list files in the
+                # directory, which is the next entry in the dirlist iterator.
+                _dir, files = next(dirlist)
+            dirlist = itertools.chain([(None, files)], dirlist)
+            pathfun.print_ls(
+                dirlist, long_style="l" in opts, formatter=self.colour.pathname
+            )
 
     def do_cat(self, args: Argslist) -> None:
         """
