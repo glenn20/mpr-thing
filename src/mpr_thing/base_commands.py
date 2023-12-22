@@ -26,7 +26,6 @@ from pathlib import Path
 from traceback import print_exc
 from typing import Any, Iterable
 
-from mpremote_path import Board
 from mpremote_path import MPRemotePath as MPath
 
 from . import paths
@@ -75,42 +74,25 @@ class BaseCommands(cmd.Cmd):
     base_prompt: str = "\r>>> "
     doc_leader: str = "================================================================"
     doc_header: str = (
-        'Execute "%magic" commands at the micropython prompt, eg: %ls /\n'
+        'Execute "%mpremote"-like commands at the micropython prompt, eg: %ls /\n'
         'Use "%%" to enter multiple command mode.\n'
         "Further help is available for the following commands:\n" + doc_leader
     )
     ruler = ""  # Cmd.ruler is broken if doc_header is multi-line
     # Commands that complete filenames on the board
-    remote_cmds = (
-        "fs",
-        "ls",
-        "cat",
-        "edit",
-        "touch",
-        "mv",
-        "cp",
-        "rm",
-        "get",
-        "cd",
-        "mkdir",
-        "rmdir",
-        "echo",
-    )
+    remote_cmds = "fs ls cat edit touch mv cp rm get cd mkdir rmdir echo".split(" ")
     # Commands that complete on directory names
-    dir_cmds = ("cd", "mkdir", "rmdir", "mount", "lcd")
+    dir_cmds = "cd mkdir rmdir mount lcd".split(" ")
     # Commands that have no completion
-    noglob_cmds = ("eval", "exec", "alias", "unalias", "set")
+    noglob_cmds = "eval exec alias unalias set".split(" ")
 
-    def __init__(self, board: Board):
+    def __init__(self):
         self.initialised = False
         self.colour = AnsiColour()
         self.multi_cmd_mode = False
         self.shell_mode = False
-        self.board = board
         self.prompt = self.base_prompt
-        self.prompt_fmt = (
-            "{bold-cyan}{id} {yellow}{platform} ({free}){bold-blue}{pwd}> "
-        )
+        self.prompt_fmt = "> "
         self.prompt_colour = "cyan"  # Colour of the short prompt
         self.shell_colour = "magenta"  # Colour of the short prompt
         self.command_colour = "reset"  # Colour of the commandline
@@ -133,7 +115,6 @@ class BaseCommands(cmd.Cmd):
         self.history_file = os.path.expanduser(HISTORY_FILE)
         if os.path.isfile(self.history_file):
             readline.read_history_file(self.history_file)
-        MPath.connect(self.board)
         self.logging = str(
             logging.getLevelName(logging.getLogger().getEffectiveLevel())
         ).lower()
@@ -158,41 +139,16 @@ class BaseCommands(cmd.Cmd):
             return True
         return False
 
-    def initialise(self) -> None:
+    def initialise(self) -> bool:
         if self.initialised:
-            return
-        self.initialised = True
-        # Load/reload the helper code onto the micropython board.
-        self.load_command_file(OPTIONS_FILE)
-        self.load_command_file(RC_FILE)
-
-    def reset(self) -> None:
-        pass
-
-    def load_board_params(self) -> None:
-        "Initialise the board parameters - used in the longform prompt"
-        if "id" in self.params:
-            return
-        # Load these parameters only once for each board
-        device_name = self.board.device_name()
-        self.params["device"] = device_name
-        self.params["dev"] = re.sub(  # /dev/ttyUSB1 -> u1
-            r"^/dev/tty(.).*(.)$",
-            r"\1\2",
-            re.sub(r"^COM([0-9]+)$", r"c\1", device_name.lower()),  # COM2 -> c2
-        )
-        with catcher():
-            self.board.exec("import os, sys, gc, time; from machine import unique_id")
-            self.params["platform"] = self.board.eval("sys.platform")
-        with catcher():
-            self.params["unique_id"] = self.board.eval('unique_id().hex(":")')
-        with catcher():
-            self.params.update(self.board.eval('eval(f"dict{os.uname()}")'))
-        unique_id = self.params.get("unique_id", "")
-        self.params["id"] = unique_id[-8:]  # Last 3 octets
+            return False
         self.params["time_ms"] = self.cmd_time
         # Add the ansi colour names
         self.params.update({c: self.colour.ansi(c) for c in self.colour.colour})
+        self.load_command_file(OPTIONS_FILE)
+        self.load_command_file(RC_FILE)
+        self.initialised = True
+        return True
 
     def set_prompt(self) -> None:
         "Set the prompt using the prompt_fmt string."
@@ -203,37 +159,11 @@ class BaseCommands(cmd.Cmd):
                 else (self.colour.ansi(self.shell_colour) + "!")
             )
             return
-        self.load_board_params()
-        pwd, alloc, free = self.board.eval(
-            "(os.getcwd(), gc.mem_alloc(), gc.mem_free())"
-        )
-
-        free_pc = round(100 * free / (alloc + free), None) if alloc > 0 else 0
-        free_delta = max(0, self.params.get("free", free) - free)
-
-        # Update some dynamic info for the prompt
-        self.params["pwd"] = pwd
-        self.params["free_delta"] = free_delta
-        self.params["free"] = free
-        self.params["free_pc"] = free_pc
         self.params["time_ms"] = self.cmd_time
         self.params["lcd"] = os.getcwd()
         self.params["lcd3"] = "/".join(os.getcwd().rsplit("/", 3)[1:])
         self.params["lcd2"] = "/".join(os.getcwd().rsplit("/", 2)[1:])
         self.params["lcd1"] = "/".join(os.getcwd().rsplit("/", 1)[1:])
-        self.params["name"] = self.names.get(  # Look up name for board
-            self.params["unique_id"], self.params["id"]
-        )
-        prompt_colours = {
-            "free": ("green" if free_pc > 50 else "yellow" if free_pc > 25 else "red"),
-            "free_pc": (
-                "green" if free_pc > 50 else "yellow" if free_pc > 25 else "red"
-            ),
-        }
-        prompt_map = {
-            k: self.colour(prompt_colours.get(k, ""), v) for k, v in self.params.items()
-        }
-
         self.prompt = (
             # Make GNU readline calculate the length of the colour prompt
             # correctly. See readline.rl_expand_prompt() docs.
@@ -243,7 +173,7 @@ class BaseCommands(cmd.Cmd):
                 # Make colour reset act like a colour stack
                 self.colour.colour_stack(
                     # Build the prompt from prompt_fmt (set with %set cmd)
-                    self.prompt_fmt.format_map(prompt_map)
+                    self.prompt_fmt.format_map(self.params)
                 ),
             )
             + self.colour.ansi(self.command_colour)
@@ -255,8 +185,11 @@ class BaseCommands(cmd.Cmd):
 
     def do_shell(self, args: Argslist) -> None:
         """
-        Execute shell commands from the "%" prompt as well, eg:
-            %!date"""
+        Execute shell commands on the local host, eg:
+            !date
+        Filenames starting with `:` will be copied from the board to a temporary
+        file on the host, eg:
+            !grep secrets :main.py"""
         if args and len(args) == 2 and args[0] == "cd":
             os.chdir(args[1])
             return
@@ -383,7 +316,6 @@ class BaseCommands(cmd.Cmd):
                 except ValueError as err:
                     print("%set:", err)
             elif key == "name":
-                self.load_board_params()
                 self.names[self.params["unique_id"]] = value
             elif key in ["lscolour", "lscolor"]:
                 d: dict[str, str] = {}
@@ -458,7 +390,6 @@ class BaseCommands(cmd.Cmd):
             f"\nPrompts are python format strings and may include:\n    ",
             end="",
         )
-        self.load_board_params()
         for i, k in enumerate(k for k in self.params if not k.startswith("ansi")):
             print(f"{'{' + k + '}':15}", end="" if (i + 1) % 5 else "\n    ")
         print("and the ansi256 color codes: {ansi0}, {ansi1}, ...{ansi255}")
@@ -539,8 +470,8 @@ class BaseCommands(cmd.Cmd):
         # Filename completion on local host ...this is a local shop for local people.
         sep = word.rfind("/")
         pre, post = word[: sep + 1], word[sep + 1 :]
-        files = Path(pre or ".").expanduser().glob(post + "*")
-        return sorted([paths.slashify(f) for f in files])
+        files = (f.name + ("/" * f.is_dir()) for f in Path(pre or ".").iterdir())
+        return [pre + f for f in files if f.startswith(post)]
 
     def complete_remote(self, word: str) -> Argslist:
         # Complete names starting with ":" as local files.
@@ -549,8 +480,8 @@ class BaseCommands(cmd.Cmd):
         # Execute filename completion on the board.
         sep = word.rfind("/")
         pre, post = word[: sep + 1], word[sep + 1 :]
-        lsdir = (str(f) for f in MPath(pre or ".").iterdir())
-        return [pre + f for f in lsdir if f.startswith(post)]
+        files = (f.name + ("/" * f.is_dir()) for f in MPath(pre or ".").iterdir())
+        return [pre + f for f in files if f.startswith(post)]
 
     def complete_params(self, word: str) -> Argslist:
         # Complete on board params, eg: set prompt="{de[TAB]
@@ -716,7 +647,7 @@ class BaseCommands(cmd.Cmd):
 
     def run(self, prefix: bytes = b"%") -> None:
         "Catch exceptions and restart the Cmd.cmdloop()."
-        self.initialise()  # Load the helper code onto the board
+        self.initialise()
         self.shell_mode = prefix == b"!"
         stop = False
         while not stop:

@@ -9,17 +9,16 @@
 # Allow list[str] instead of List[str]
 from __future__ import annotations
 
-import itertools
 import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Iterable
 
+from mpremote_path import Board
 from mpremote_path import MPRemotePath as MPath
 
 from . import paths
-from .base_commands import Argslist, BaseCommands
+from .base_commands import Argslist, BaseCommands, catcher
 
 
 # The commands we support at the remote command prompt.
@@ -27,6 +26,13 @@ from .base_commands import Argslist, BaseCommands
 # initialisation and utility methods and overrides for cmd.Cmd class.
 class RemoteCmd(BaseCommands):
     "A class to run commands on the micropython board."
+
+    def __init__(self, board: Board):
+        self.board = board
+        self.free = 0
+        super().__init__()
+        paths.name_formatter = self.colour.pathname
+        paths.path_formatter = self.colour.path
 
     @staticmethod
     def _options(args: Argslist) -> tuple[str, Argslist]:
@@ -67,43 +73,29 @@ class RemoteCmd(BaseCommands):
         The file listing will be colourised the same as "ls --color". Use the
         "set" command to add or change the file listing colours."""
         opts, args = self._options(args)
-        recursive = "R" in opts.upper()
-        with self.board.raw_repl():  # Avoid jumping in and out of raw repl
-            dirlist = iter(paths.dirlist(map(MPath, args or ["."]), recursive))
-            # The first entry is the listing of the files on the command line
-            dirs, files, missing = paths.split_files(next(dirlist)[1])
-            for f in missing:
-                print(f"'{f}': No such file or directory.")
-            if len(dirs) == 1 and not files and not missing and not recursive:
-                # If only one directory provided, just list files in the
-                # directory, which is the next entry in the dirlist iterator.
-                _dir, files = next(dirlist)
-            dirlist = itertools.chain([(None, files)], dirlist)
-            paths.print_ls(
-                dirlist, long_style="l" in opts, formatter=self.colour.pathname
-            )
+        with self.board.raw_repl():  # Wrap all ops in a top-level raw_repl
+            files = map(MPath, args or ["."])
+            dirlist = paths.dirlist(files, "r" in opts.lower())
+            paths.ls(dirlist, "l" in opts)
 
     def do_cat(self, args: Argslist) -> None:
         """
         List the contents of files on the board:
             %cat file [file2 ...]"""
-        with self.board.raw_repl():
-            for arg in args:
-                print(MPath(arg).read_text(), end="")
+        for arg in args:
+            print(MPath(arg).read_text(), end="")
 
     def do_edit(self, args: Argslist) -> None:
         """
-        Copy a file from the board, open it in your editor, then copy it back:
-            %edit file1 [file2 ...]
-        """
-        with self.board.raw_repl():
-            for arg in args:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    src = MPath(arg)
-                    dst = Path(tmpdir) / src.name
-                    paths.copypath(src, dst)
-                    if 0 == os.system(f"eval ${{EDITOR:-/usr/bin/vi}} {str(dst)}"):
-                        paths.copypath(dst, src)
+        Copy a file from the board, open  it in your editor, then copy it back:
+            %edit file1 [file2 ...]"""
+        for arg in args:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                src = MPath(arg)
+                dst = Path(tmpdir) / src.name
+                paths.copypath(src, dst)
+                if 0 == os.system(f"eval ${{EDITOR:-/usr/bin/vi}} {str(dst)}"):
+                    paths.copypath(dst, src)
 
     def do_touch(self, args: Argslist) -> None:
         """
@@ -123,7 +115,7 @@ class RemoteCmd(BaseCommands):
             files, dest = (MPath(f) for f in args[:-1]), MPath(args[-1])
             src, dst = paths.check_files("mv", files, dest, opts)
             if dst:
-                paths.mv_files(src, dst)
+                paths.mv(src, dst)
 
     def do_cp(self, args: Argslist) -> None:
         """
@@ -135,7 +127,7 @@ class RemoteCmd(BaseCommands):
             files, dest = (MPath(f) for f in args[:-1]), MPath(args[-1])
             src, dst = paths.check_files("cp", files, dest, opts)
             if dst:
-                paths.cp_files(src, dst)
+                paths.cp(src, dst)
 
     def do_rm(self, args: Argslist) -> None:
         """
@@ -143,21 +135,8 @@ class RemoteCmd(BaseCommands):
             %rm [-r] file1 [file2 ...]"""
         opts, args = self._options(args)
 
-        def rm_files(files: Iterable[MPath], opts: str) -> None:
-            for f in files:
-                if f.is_file():
-                    if "q" not in opts:
-                        print(f"{str(f)}")
-                    f.unlink()
-                elif f.is_dir():
-                    if "r" in opts:
-                        rm_files(f.iterdir(), opts)
-                    if "q" not in opts:
-                        print(f"{str(f)}/")
-                    f.rmdir()
-
         with self.board.raw_repl():
-            rm_files(map(MPath, args), opts)
+            paths.rm(map(MPath, args), "r" in opts)
 
     def _is_remote(self, filename: str, pwd: str) -> bool:
         "Is the file on a remote mounted filesystem."
@@ -173,8 +152,7 @@ class RemoteCmd(BaseCommands):
         """
         opts, args = self._options(args)
         with self.board.raw_repl():
-            self.load_board_params()
-            pwd: str = self.params["pwd"]
+            pwd: str = str(MPath.cwd())
             files: list[str] = []
             for f in args:
                 if not f.startswith(":") and self._is_remote(f, pwd):
@@ -182,7 +160,7 @@ class RemoteCmd(BaseCommands):
                 else:
                     files.append(f)
             dest = files.pop()[1:] if files[-1].startswith(":") else "."
-            paths.cp_files((MPath(f) for f in files), Path(dest))
+            paths.cp((MPath(f) for f in files), Path(dest))
 
     def do_put(self, args: Argslist) -> None:
         """
@@ -194,13 +172,12 @@ class RemoteCmd(BaseCommands):
         if not args:
             print("%put: Must provide at least one file or directory to copy.")
         with self.board.raw_repl():
-            self.load_board_params()
-            pwd: str = self.params["pwd"]
+            pwd: str = str(MPath.cwd())
             dest = args.pop()[1:] if args[-1].startswith(":") else pwd
             if self._is_remote(dest, pwd):
                 print(f"%put: do not put files into /remote mounted folder: {pwd}")
                 return
-            paths.cp_files((Path(f) for f in args), MPath(dest))
+            paths.cp((Path(f) for f in args), MPath(dest))
 
     # Directory commands
     def do_cd(self, args: Argslist) -> None:
@@ -270,10 +247,9 @@ class RemoteCmd(BaseCommands):
         for arg in args:
             try:
                 buf = Path(arg).read_text()
+                self.board.exec(buf)
             except OSError as err:
                 print(OSError, err)
-            else:
-                self.board.exec(buf)
 
     def do_echo(self, args: Argslist) -> None:
         """
@@ -295,7 +271,6 @@ class RemoteCmd(BaseCommands):
             %uname"""
         if args:
             print("uname: unexpected args:", args)
-        self.load_board_params()
         print(
             "Micropython {nodename} ({unique_id}) "
             "{version} {sysname} {machine}".format_map(self.params)
@@ -321,8 +296,8 @@ class RemoteCmd(BaseCommands):
         opts, args = self._options(args)
         path = Path(args[0] if args else ".").resolve()
         if path.is_dir():
-            with self.board.raw_repl() as r:
-                r.mount_local(str(path), unsafe_links="l" in opts)
+            with self.board.raw_repl() as mpremote:
+                mpremote.mount_local(str(path), unsafe_links="l" in opts)
             print(f"Mounted local folder {args} on /remote")
             print(MPath.cwd())
         else:
@@ -337,8 +312,8 @@ class RemoteCmd(BaseCommands):
         if str(MPath.cwd()).startswith("/remote"):
             MPath("/").chdir()
             print(MPath.cwd())
-        with self.board.raw_repl() as r:
-            r.umount_local()
+        with self.board.raw_repl() as mpremote:
+            mpremote.umount_local()
         print("Unmounted /remote")
 
     def do_free(self, args: Argslist) -> None:
@@ -377,3 +352,56 @@ class RemoteCmd(BaseCommands):
         )
         print("Before GC: Free bytes =", before)
         print("After  GC: Free bytes =", after)
+
+    # Override the base class initialise() method to connect to the board
+    def initialise(self) -> None:
+        "Initialise the connection to the micropython board."
+        if self.initialised:
+            return
+        MPath.connect(self.board)  # Connect the MPRemotePath class to the board
+        # Update the parameters used in the longform prompt
+        self.prompt_fmt = (
+            "{bold-cyan}{id} {yellow}{platform} ({free}){bold-blue}{pwd}> "
+        )
+        self.params["device"] = self.board.device_name
+        self.params["dev"] = self.board.dev
+        with catcher():
+            self.board.exec("import os, sys, gc, time; from machine import unique_id")
+            self.params["platform"] = self.board.eval("sys.platform")
+        with catcher():
+            self.params["unique_id"] = self.board.eval('unique_id().hex(":")')
+        with catcher():
+            self.params.update(self.board.eval('eval(f"dict{os.uname()}")'))
+        with catcher():
+            self.board.exec(
+                "def _pr(): return (os.getcwd(), gc.mem_alloc(), gc.mem_free())"
+            )
+        unique_id = self.params.get("unique_id", "")
+        self.params["id"] = unique_id[-8:]  # Last 3 octets
+        self.params["name"] = self.params["id"]
+        super().initialise()
+        # Load "name" param from self.names after it is loaded from the options
+        # file in super().initialise()
+        self.params["name"] = self.names.get(  # Look up name for board
+            self.params["unique_id"], self.params["id"]
+        )
+
+    # Override the base class set_prompt() method to update the prompt
+    def set_prompt(self) -> None:
+        "Set the prompt using the prompt_fmt string."
+        if not self.multi_cmd_mode:
+            super().set_prompt()
+            return
+        # Update the prompt variables with some dynamiv info from board
+        pwd, alloc, free = self.board.eval("_pr()")
+        free_pc = round(100 * free / (alloc + free), None) if alloc > 0 else 0
+        free_delta = max(0, self.free - free)
+        free_colour = "green" if free_pc > 50 else "yellow" if free_pc > 25 else "red"
+        self.free = free
+
+        # Update some dynamic info for the prompt
+        self.params["pwd"] = pwd
+        self.params["free"] = self.colour(free_colour, free)
+        self.params["free_pc"] = self.colour(free_colour, free_pc)
+        self.params["free_delta"] = free_delta
+        super().set_prompt()

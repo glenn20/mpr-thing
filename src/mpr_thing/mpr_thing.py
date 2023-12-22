@@ -90,12 +90,10 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
                 # do a soft reset and reload the filesystem hook
                 transport.write_ctrl_d(console_out_write)
                 beginning_of_line = True
-                remote.reset()
             elif c == b"\x12":  # ctrl-R
                 # Toggle DTR (hard reset) and reload the filesystem hook
                 hard_reset(transport)
                 beginning_of_line = True
-                remote.reset()
             elif c == b"\x0a" and code_to_inject is not None:
                 transport.serial.write(code_to_inject)  # ctrl-j, inject code
             elif c == b"\x0b" and file_to_inject is not None:
