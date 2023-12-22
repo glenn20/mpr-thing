@@ -84,11 +84,11 @@ class AnsiColour:
         return f"\x1b[{spec}m{word}\x1b[{reset}m"
 
     def __call__(
-        self, spec: str, word: str, bold: Optional[bool] = None, reset: str = "reset"
+        self, spec: str, word: Any, bold: Optional[bool] = None, reset: str = "reset"
     ) -> str:
         """Return "word" colourised according to "spec", which may be a colour
         name (eg: 'green') or an ansi sequence (eg: '00;32')."""
-        return self.colourise(spec, word, bold, reset)
+        return self.colourise(spec, str(word), bold, reset)
 
     def bold(self, spec: str, bold: Optional[bool] = True) -> str:
         """Set the "bold" attribute in an ansi colour "spec" if "bold" is
