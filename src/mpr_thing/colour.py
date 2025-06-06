@@ -20,6 +20,8 @@ from colorama import init as colorama_init  # For ansi colour on Windows
 # Ensure colour works on Windows terminals.
 colorama_init()
 
+ANSI_COLOURS = ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
+
 
 class AnsiColour:
     "A class to colourise text with ANSI escape sequences"
@@ -27,32 +29,26 @@ class AnsiColour:
     def __init__(self, enable: bool = True) -> None:
         self._enable = enable
         # Load the colour specification for the "ls" command
-        spec = (
+        colour_spec_str = (
             os.getenv("LS_COLORS")
             or subprocess.check_output(
                 "eval `dircolors`; echo -n $LS_COLORS", shell=True, text=True
             )
-            or "di=01;34:*.py=01;36:"
-        ).rstrip(
-            ":"
-        )  # A fallback color spec
-        self.spec = (
-            {k.lstrip("*"): v for k, v in (c.split("=") for c in spec.split(":"))}
-            if spec
+            or "di=01;34:*.py=01;36:"  # A fallback color spec
+        ).rstrip(":")
+        colour_spec_list = colour_spec_str.split(":")
+        self.colour_spec: dict[str, str] = (
+            {k.lstrip("*"): v for k, v in (c.split("=") for c in colour_spec_list)}
+            if colour_spec_list
             else {}
         )
-        if ".py" not in self.spec:  # A fallback colour for *.py files
-            self.spec[".py"] = "01;36"
-        # Dict of ansi colour specs by name
-        self.colour = {  # ie: {'black': '00;30', ... 'white': '00;37'}
-            name: f"00;3{i}"
-            for i, name in enumerate(
-                ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
-            )
-        }
+        if ".py" not in self.colour_spec:  # A fallback colour for *.py files
+            self.colour_spec[".py"] = "01;36"
+        # Dict of ansi colour specs by name: {'black': '00;30', ... 'white': '00;37'}
+        self.colour = {name: f"00;3{i}" for i, name in enumerate(ANSI_COLOURS)}
         self.colour.update(
             dict(  # Add the bright/bold colour variants
-                ("bold-" + x, "01;" + spec[3:]) for x, spec in self.colour.items()
+                ("bold-" + name, "01;" + spec[3:]) for name, spec in self.colour.items()
             )
         )
         self.colour["reset"] = "00"
@@ -98,10 +94,8 @@ class AnsiColour:
 
     def pick(self, file: str, bold: Optional[bool] = None) -> str:
         """Pick a colour for "file" according to the "ls" command."""
-        spec = (
-            self.spec.get("di", "")
-            if file[-1] == "/"
-            else self.spec.get(os.path.splitext(file)[1], "")
+        spec = self.colour_spec.get(
+            "di" if file.endswith("/") else os.path.splitext(file)[1], ""
         )
         return self.bold(spec, bold)
 
@@ -137,7 +131,7 @@ class AnsiColour:
     # Return a colour decorated directory
     def dir(self, file: str, reset: str = "0") -> str:
         """Return "dir" colourised according to the colour "ls" command."""
-        return self.colourise(self.spec.get("di", ""), file, reset=reset)
+        return self.colourise(self.colour_spec.get("di", ""), file, reset=reset)
 
     def colour_stack(self, text: str) -> str:
         """Change the way colour reset sequence ("\x1b[0m") works.

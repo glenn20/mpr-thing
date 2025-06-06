@@ -2,6 +2,8 @@
 
 # MIT License: Copyright (c) 2021 @glenn20
 
+from __future__ import annotations
+
 import locale
 import re
 import select
@@ -36,11 +38,16 @@ def hard_reset(transport: SerialTransport) -> None:
         transport.mounted = False
 
 
-def cursor_column(console_in: ConsolePosix | ConsoleWindows, writer: Writer) -> int:
-    "Query the console to get the current cursor column number."
-    writer(b"\x1b[6n")  # Query terminal for cursor position
-    buf = b""
-    for _ in range(10):  # Don't wait forever - just in case
+def query_console(
+    console_in: ConsolePosix | ConsoleWindows,
+    writer: Writer,
+    query: str,
+    response_pattern: str,
+) -> re.Match | None:
+    "Send an escape query to the console and wait for a response."
+    writer(query.encode())  # Send query to terminal
+    response = b""
+    for _ in range(50):  # Don't wait forever - just in case
         if isinstance(console_in, ConsolePosix):
             select.select([console_in.infd], [], [], 0.1)
         else:
@@ -50,14 +57,17 @@ def cursor_column(console_in: ConsolePosix | ConsoleWindows, writer: Writer) -> 
                     break
                 time.sleep(0.01)
         c = console_in.readchar()
-        if c is not None:
-            buf += c
-            if c == b"R":  # Wait for end of escape sequence
-                break
+        if c:
+            response += c
+            if match := re.match(response_pattern, response.decode()):
+                return match
     else:
-        return -1
+        return None
 
-    match = re.match(r"^\x1b\[(\d)*;(\d*)R", buf.decode())
+
+def cursor_column(console_in: ConsolePosix | ConsoleWindows, writer: Writer) -> int:
+    "Query the console to get the current cursor column number."
+    match = query_console(console_in, writer, "\x1b[6n", r"^\x1b\[(\d+);(\d+)R")
     return int(match.groups()[1]) if match else -1
 
 
@@ -75,10 +85,11 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
 ) -> None:
     'An overload function for the main repl loop in "mpremote".'
 
-    at_prompt, beginning_of_line, prompt_char_count = False, False, 0
+    seen_prompt, beginning_of_line = False, False
     prompt = b"\n>>> "
+    serial_buffer = b""  # Keep track of last chars from serial port
     transport: SerialTransport = state.transport  # type: ignore
-    remote = RemoteCmd(Board(transport, console_out_write))
+    magic_command_processor = RemoteCmd(Board(transport, console_out_write))
 
     while True:
         console_in.waitchar(transport.serial)
@@ -89,10 +100,12 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
             elif c == b"\x04":  # ctrl-D
                 # do a soft reset and reload the filesystem hook
                 transport.write_ctrl_d(console_out_write)
+                magic_command_processor.initialised = False
                 beginning_of_line = True
             elif c == b"\x12":  # ctrl-R
                 # Toggle DTR (hard reset) and reload the filesystem hook
                 hard_reset(transport)
+                magic_command_processor.initialised = False
                 beginning_of_line = True
             elif c == b"\x0a" and code_to_inject is not None:
                 transport.serial.write(code_to_inject)  # ctrl-j, inject code
@@ -106,31 +119,26 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
                 except TransportError as er:
                     console_out_write(b"Error:\r\n")
                     console_out_write(repr(er).encode())
-                transport.exit_raw_repl()
                 beginning_of_line = True
+                transport.exit_raw_repl()
             elif (
                 c in b"%!"
-                and at_prompt  # Magic sequence if at start of line
+                and seen_prompt  # Magic sequence if at start of line
                 and (
                     beginning_of_line
                     or cursor_column(console_in, console_out_write) == len(prompt)
                 )
             ):
-                console_out_write(b"\x1b[2K")  # Clear other chars on line
-                console_in.exit()
+                console_out_write(b"\r\x1b[2K")  # Clear line before rewriting prompt
                 try:
-                    remote.run(c)
+                    console_in.exit()
+                    magic_command_processor.run(c)
                 finally:
                     console_in.enter()
-                if c == b"!":
-                    transport.serial.write(b"\x0d")  # Force another prompt
-                beginning_of_line = True
-            elif c == b"\x0d":  # ctrl-m: carriage return
-                transport.serial.write(c)
                 beginning_of_line = True
             else:
                 transport.serial.write(c)
-                beginning_of_line = False
+                beginning_of_line = c in b"\r\n"  # Set beginning of line if CR or LF
 
         n = 0
         try:
@@ -142,7 +150,7 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
 
         if n > 0:
             dev_data_in = transport.serial.read(n)
-            if dev_data_in is not None:
+            if dev_data_in:
                 if escape_non_printable:
                     # Pass data through to the console, with escaping of non-printables.
                     console_data_out = bytearray()
@@ -154,17 +162,14 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
                 else:
                     console_data_out = dev_data_in
                 console_out_write(console_data_out)
-                for c in dev_data_in:
-                    # Set at_prompt=True if we see the prompt string
-                    # Stays set till the next newline char
-                    if c == prompt[prompt_char_count]:
-                        at_prompt = False  # Reset at_prompt after '\n'
-                        prompt_char_count += 1
-                        if prompt_char_count == len(prompt):
-                            prompt_char_count = 0
-                            at_prompt = True
-                    else:
-                        prompt_char_count = 0
+                # mpr_thing: Set seen_prompt=True if we see the expected prompt
+                # string coming from micropython on the serial port.
+                if b"\n" in dev_data_in:
+                    seen_prompt = False
+                serial_buffer = serial_buffer + dev_data_in
+                if not seen_prompt:
+                    seen_prompt = prompt in serial_buffer
+                serial_buffer = serial_buffer[-len(prompt) :]
 
 
 # Override the mpremote main repl loop!!!
