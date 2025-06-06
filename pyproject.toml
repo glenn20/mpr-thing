@@ -1,7 +1,6 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
-
 
 [project]
 name = "mpr-thing"
@@ -11,25 +10,103 @@ urls = {Homepage = "https://github.com/glenn20/mpr-thing"}
 readme = "README.md"
 license = {text = "MIT"}
 classifiers = [
-    "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Developers",
     "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Embedded Systems",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
 ]
-requires-python = ">=3.7"
-dynamic = ["dependencies", "version"]
-
-[tool.hatch.version]
-path = "src/mpr_thing/__init__.py"
+requires-python = ">=3.9"
+dependencies = [
+    "colorama>=0.4.6",
+    "mpremote>=1.20.0,!= 1.24.0",
+    "mpremote-path>=0.1.5",
+]
+dynamic = ["version"]
 
 [project.scripts]
 mpr-thing = "mpr_thing.mpr_thing:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/mpr_thing"]
+[dependency-groups]
+typing = [
+    "mypy>=0.910", "types-requests>=2.32", "types-pyserial>=3.5",
+    "types-pyyaml>=6.0", "types-colorama>=0.4.15",
+]
+test = [
+    {include-group = "typing"},
+    "ruff>=0.6.7", "pytest>=8.3.2", "pytest-cov>=3.0.0", "pytest-sugar>=1.0.0",
+    "requests>=2.32.3", "pyyaml>=6.0.2", "tox>=4.22.0", "tox-uv>=1.13",
+]
+dev = [
+    {include-group = "test"},
+    "pre-commit>=2.9", "pre-commit-uv>=4.0", "pip>=23.0",  # pre-commit hooks
+    "hatch>=1.12", "hatch-vcs>=0.5", # For building and updating _version.py
+]
+
+
+[tool.hatch]
+# version.path = "src/mpremote_path/__init__.py"
+version.source = "vcs"  # Get the version from git, eg: 0.0.6.dev0+g1234567
+# Drop the local version part (eg: +g1234567) or pypi will reject package
+version.raw-options.local_scheme = "no-local-version"
+# A manually triggered github release workflow may generate a new tag
+# with .devN suffix. We need to tell setuptools_scm to ignore past tags with
+# this suffix when calculating the version number else it refuses to
+# bump the version number.
+version.raw-options.git_describe_command = [
+    "git", "describe", "--dirty", "--tags", "--long",
+    "--match", "v*.[0-9]",
+    "--match", "v*.[0-9][0-9]",
+    "--match", "v*.[0-9][0-9][0-9]",
+]
+build.hooks.vcs.version-file = "src/mpr_thing/_version.py"
+build.targets.wheel.packages = ["src/mpr_thing"]
+
+[tool.mypy]
+files = ["src"]
+python_version = "3.9"
+disallow_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = false
 
 [tool.ruff]
-target-version = "py37"
+exclude = ["_version.py", "tests/_data"]
+lint.extend-select = ["I", "E4", "E7", "E9", "F", "B"]
 
-[tool.ruff.lint]
-# 1. Enable flake8-bugbear (`B`) rules, in addition to the defaults.
-select = ["E4", "E7", "E9", "F", "B"]
+[tool.coverage]
+run.source = ["src"]
+run.omit = ["_version.py"]
+report.skip_covered = false
+append = true
+
+# https://tox.wiki/en/latest/config.html#pyproject-toml-native
+[tool.tox]  #
+env_list = [
+    "clean", "mypy", "lint", "format",
+    "3.9", "3.10", "3.11", "3.12", "3.13"
+]
+requires = ["tox>=4.19", "tox-uv>=1.13"]
+env.clean.commands = [["coverage", "erase"]]  # Cleanup coverage data
+env.clean.skip_install = true
+env.mypy.commands = [["mypy"]]
+env.lint.commands = [["ruff", "check"]]
+env.format.commands = [["ruff", "format", "--check"]]
+
+# Overrides for the latest python version
+env.3.13.commands = [["pytest", "--cov", {replace = "posargs", extend = true}]]
+env.3.13.labels = ["cov", "coverage", "latest"]
+
+# Default command and options for all the environments
+env_run_base.commands = [["pytest", {replace = "posargs", extend = true}]]
+env_run_base.dependency_groups = ["test"]  # Ensure test dependencies are installed
+env_run_base.package = "editable"
+env_run_base.runner = "uv-venv-runner"
+env_run_base.skip_install = true
