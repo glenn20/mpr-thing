@@ -26,8 +26,9 @@ from typing import Any
 
 from mpremote_path import MPRemotePath as MPath
 from mpremote_path.util import mpfs
-
-from .colour import AnsiColour
+from rich.console import Console
+from rich.errors import StyleSyntaxError
+from rich.style import Style
 
 # Type alias for the list of command arguments
 Argslist = list[str]
@@ -46,6 +47,18 @@ OPTIONS_FILE = CONFIGPATH / "options"
 RC_FILE = CONFIGPATH / "startup-commands"
 
 
+def check_rich_style(key: str, style: str) -> bool:
+    "Check if the value is a valid rich formatting style."
+    if style == "reset":
+        return True
+    try:
+        _ = Style.parse(style)
+        return True
+    except StyleSyntaxError:
+        print(f"%set {key}: invalid style:", style)
+        return False
+
+
 def slashify(path: Path | str) -> str:
     """Return `path` as a string (with a trailing slash if it is a
     directory)."""
@@ -60,6 +73,7 @@ def slashify(path: Path | str) -> str:
 # and utility methods as well as some necessary overrides for the cmd.Cmd class.
 class BaseCommands(cmd.Cmd):
     initialised: bool  # Whether the command line has been initialised
+    console: Console  # Rich console for output
     multi_cmd_mode: bool  # Whether we are in multi-command mode
     shell_mode: bool  # Whether we are in shell mode (eg: ! command)
     prompt: str  # The current prompt string
@@ -93,7 +107,7 @@ class BaseCommands(cmd.Cmd):
 
     def __init__(self) -> None:
         self.initialised = False
-        self.colour = AnsiColour()
+        self.console = Console()
         self.multi_cmd_mode = False
         self.shell_mode = False
         self.prompt = self.base_prompt
@@ -131,8 +145,6 @@ class BaseCommands(cmd.Cmd):
             logging.getLevelName(logging.getLogger().getEffectiveLevel())
         ).lower()
         self.parameters["time_ms"] = self.cmd_time
-        # Add the ansi colour names
-        self.parameters.update({c: self.colour.ansi(c) for c in self.colour.colour})
         self.load_command_file(OPTIONS_FILE)
 
     def initialise(self) -> bool:
@@ -261,29 +273,17 @@ class BaseCommands(cmd.Cmd):
                     self.multi_cmd_mode = saved_multi_cmd_mode
                     self.set_prompt()  # Restore the right prompt
             elif key in ["promptcolour", "promptcolor"]:
-                ansi = self.colour.ansi(value)
-                if ansi[0] == "\x1b":
+                if check_rich_style(key, value):
                     self.prompt_colour = value
-                else:
-                    print("%set: invalid colour:", value)
             elif key in ["commandcolour", "commandcolor"]:
-                ansi = self.colour.ansi(value)
-                if ansi[0] == "\x1b":
+                if check_rich_style(key, value):
                     self.command_colour = value
-                else:
-                    print("%set: invalid colour:", value)
             elif key in ["shellcolour", "shellcolor"]:
-                ansi = self.colour.ansi(value)
-                if ansi[0] == "\x1b":
+                if check_rich_style(key, value):
                     self.shell_colour = value
-                else:
-                    print("%set: invalid colour:", value)
             elif key in ["outputcolour", "outputcolor"]:
-                ansi = self.colour.ansi(value)
-                if ansi[0] == "\x1b":
+                if check_rich_style(key, value):
                     self.output_colour = value
-                else:
-                    print("%set: invalid colour:", value)
             elif key == "names":
                 try:
                     self.device_names.update(json.loads(value))
@@ -295,12 +295,8 @@ class BaseCommands(cmd.Cmd):
                 d: dict[str, str] = {}
                 d.update(json.loads(value))
                 for k, v in d.items():
-                    colour = self.colour.ansi(v)
-                    if colour[0] != "\x1b":
-                        print("%set: unknown colour:", v)
-                        continue
-                    self.lsspec[k.lstrip("*")] = v
-                self.colour.colour_spec.update(self.lsspec)
+                    if check_rich_style(f"lscolour {k}", v):
+                        self.lsspec[k.lstrip("*")] = v
             elif key == "logging":
                 for arg in value.split(","):
                     pair = arg.split("=", maxsplit=1)
@@ -332,8 +328,8 @@ class BaseCommands(cmd.Cmd):
             inspect.cleandoc(
                 """
         Set some options, eg:
-            %set prompt='{cyan}{name}@{dev}-{sysname}-({free}){blue}{pwd}> '
-            %set prompt='{cyan}{name}@{dev}({free}){green}{lcd1}:{blue}{pwd}> '
+            %set prompt='[cyan]{name}@{dev}-{sysname}-({free})[blue]{pwd}>'
+            %set prompt='[cyan]{name}@{dev}({free})[green]{lcd1}:[blue]{pwd}>'
             %set promptcolour=cyan
             %set commandcolour=yellow
             %set outputcolour=cyan
@@ -343,7 +339,7 @@ class BaseCommands(cmd.Cmd):
         Update the mapping of all device unique_ids and names (as json string):
             %set names='{"ab:cd:ef:01:23:45": "node01", ...}'
         Add extra colour specs (as json) for file listing with "ls":
-            %set lscolour='{"di": "bold-blue", "*.py": "bold-cyan"}'
+            %set lscolour='{"di": "bold blue", "*.py": "bold cyan"}'
             %set lscolor='{"*.pyc": "magenta"}'
         Enable logging for a module or all modules:
             %set logging=warning
@@ -359,9 +355,8 @@ class BaseCommands(cmd.Cmd):
             f"\nPrompts are python format strings and may include:\n    ",
             end="",
         )
-        for i, k in enumerate(k for k in self.parameters if not k.startswith("ansi")):
+        for i, k in enumerate(self.parameters):
             print(f"{'{' + k + '}':15}", end="" if (i + 1) % 5 else "\n    ")
-        print("and the ansi256 color codes: {ansi0}, {ansi1}, ...{ansi255}")
 
         print("\n")
         print(
@@ -371,9 +366,6 @@ class BaseCommands(cmd.Cmd):
             {device/dev}: full or short name for the serial device
             {sysname/nodename/release/version/machine}: set from os.uname()
             {unique_id/id} from machine.unique_id() (id is last 3 octets)
-            {colour/bold-colour}: insert an ANSI colour sequence
-            {reset}: pop the colour stack
-            {bold/normal/underline/reverse}: insert an ANSI text sequence
             {pwd}: current working directory on board
             {free/_pc}: the current free heap memory in bytes/percentage
             {free_delta}: the change in free heap memory during last command
@@ -520,7 +512,6 @@ class BaseCommands(cmd.Cmd):
     # @override
     def onecmd(self, line: str) -> bool:
         """Override the default Cmd.onecmd()."""
-        print(f"{self.colour.ansi('reset')}", end="", flush=True)
         start_time = time.perf_counter()
         if isinstance(line, list):
             # List of str is pushed back onto cmdqueue in self.split_commandline()
@@ -557,6 +548,8 @@ class BaseCommands(cmd.Cmd):
 
     # @override
     def precmd(self, line: str) -> str:
+        if not isinstance(line, list):
+            print("\x1b[0m", end="", flush=True)  # Reset the console colour
         self.initialise()
         return line
 
@@ -568,19 +561,17 @@ class BaseCommands(cmd.Cmd):
 
     def set_prompt(self) -> None:
         "Set the prompt using the prompt_fmt string."
-        prompt = (
+        colour = self.shell_colour if self.shell_mode else self.prompt_colour
+        prompt = f"[reset][{colour}]"
+        prompt += (
             self.long_prompt.format_map(self.parameters) if self.multi_cmd_mode else
             self.base_prompt
         )  # fmt: off
-        self.prompt = self._readline_escape_prompt(
-            self.colour.ansi(self.command_colour) +
-            self.colour.colour_stack(prompt)
-            + (
-                self.colour.ansi(self.command_colour) if self.multi_cmd_mode else
-                (self.colour.ansi(self.shell_colour) + "!") if self.shell_mode else
-                (self.colour.ansi(self.command_colour) + "%")
-            )
-        )  # fmt: off
+        prompt += f"[reset][{self.command_colour}]"  # Reset the colour at the end
+        prompt += " " if self.multi_cmd_mode else "!" if self.shell_mode else "%"
+        with self.console.capture() as capture:
+            self.console.print(prompt, end="")
+        self.prompt = self._readline_escape_prompt(capture.get())
 
     # @override
     def postcmd(self, stop: Any, line: str) -> bool:
@@ -604,8 +595,7 @@ class BaseCommands(cmd.Cmd):
                 print_exc()
             finally:
                 if not self.multi_cmd_mode:
-                    print(f"{self.colour.ansi('reset')}", end="")
-                    print(self.base_prompt, end="", flush=True)
+                    self.console.print(f"[reset]{self.base_prompt}", end="")
             if not self.multi_cmd_mode:
                 break
         self.shell_mode = False

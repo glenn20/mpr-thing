@@ -83,8 +83,10 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
 ) -> None:
     'An overload function for the main repl loop in "mpremote".'
 
-    transport: SerialTransport = state.transport  # type: ignore
-    magic_command_interpreter = RemoteCmd(Board(transport, console_out_write))
+    if not isinstance(state.transport, SerialTransport):
+        raise TypeError("Expected state.transport to be a SerialTransport instance")
+    transport: SerialTransport = state.transport
+    magic_command_interpreter = RemoteCmd(Board(transport, writer=console_out_write))
 
     prompt = b"\n>>> "  # The prompt we expect to see from micropython
     serial_buffer = b""  # Keep track of recent chars from serial port

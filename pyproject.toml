@@ -110,4 +110,3 @@ env_run_base.commands = [["pytest", {replace = "posargs", extend = true}]]
 env_run_base.dependency_groups = ["test"]  # Ensure test dependencies are installed
 env_run_base.package = "editable"
 env_run_base.runner = "uv-venv-runner"
-env_run_base.skip_install = true

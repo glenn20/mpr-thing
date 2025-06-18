@@ -50,8 +50,30 @@ class RemoteCmd(BaseCommands):
         self.last_free = 0
         super().__init__()
         MPath.connect(self.board)  # Connect the MPRemotePath class to the board
-        mpfs.name_formatter = self.colour.pathname
-        mpfs.path_formatter = self.colour.path
+        mpfs.name_formatter = self.colour_pathname
+        mpfs.path_formatter = self.colour_path
+
+    # Return a colour decorated filename
+    def colour_pathname(self, file: Path) -> str:
+        """Return "file" colourised according to the colour "ls" command."""
+        name = file.name or str(file)
+        spec = self.lsspec.get("di" if file.is_dir() else os.path.splitext(file)[1], "")
+        if not spec:
+            return name
+        with self.console.capture() as capture:
+            self.console.print(f"[{spec}]{name}", end="")
+        return capture.get()  # Get the captured output
+
+    # Return a colour decorated filename
+    def colour_path(self, file: Path, reset: str = "0") -> str:
+        """Return "file" colourised according to the colour "ls" command."""
+        name = str(file)
+        spec = self.lsspec.get("di" if file.is_dir() else os.path.splitext(file)[1], "")
+        if not spec:
+            return name
+        with self.console.capture() as capture:
+            self.console.print(f"[{spec}]{name}", end="")
+        return capture.get()  # Get the captured output
 
     # File commands
     def do_fs(self, args: Argslist) -> None:
@@ -411,8 +433,8 @@ class RemoteCmd(BaseCommands):
         self.parameters.update(
             {
                 "pwd": pwd,
-                "free": self.colour(free_colour, free),
-                "free_pc": f"{self.colour(free_colour, free_percent)}%",
+                "free": f"[{free_colour}]free",
+                "free_pc": f"[{free_colour}]{free_percent}%",
                 "free_delta": f"{self.last_free - free:+d}",
                 "time_ms": self.cmd_time,
                 "lcd": str(cwd := Path.cwd()),  # Current working directory
