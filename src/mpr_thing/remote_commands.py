@@ -10,16 +10,16 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import override
 
 from mpremote_path import Board
 from mpremote_path import MPRemotePath as MPath
 from mpremote_path.util import mpfs, mpfsops
 
-from .base_commands import Argslist, BaseCommands, catcher
+from .base_commands import Argslist, BaseCommands
 
 
 def _opt_args(args: Argslist) -> tuple[str, Argslist]:
@@ -39,9 +39,15 @@ def _opt_args(args: Argslist) -> tuple[str, Argslist]:
 class RemoteCmd(BaseCommands):
     "A class to run commands on the micropython board."
 
+    board: Board
+    last_free: int
+
     def __init__(self, board: Board):
         self.board = board
-        self.free = 0
+        self.long_prompt = (
+            "{bold-cyan}{name} {yellow}{platform} (free:{free}){bold-blue}{pwd}> "
+        )
+        self.last_free = 0
         super().__init__()
         MPath.connect(self.board)  # Connect the MPRemotePath class to the board
         mpfs.name_formatter = self.colour.pathname
@@ -86,18 +92,27 @@ class RemoteCmd(BaseCommands):
 
     def do_edit(self, args: Argslist) -> None:
         """
-        Copy a file from the board, open  it in your editor, then copy it back:
+        Copy a file from the board, open it in your editor, then copy it back:
             %edit file1 [file2 ...]"""
-        for arg in args:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                src = MPath(arg)
-                dst = Path(tmpdir) / src.name
-                try:
-                    mpfs.get(src, dst)
-                except ValueError:
-                    dst.touch()
-                if 0 == os.system(f"eval ${{EDITOR:-/usr/bin/vi}} {str(dst)}"):
-                    mpfs.put(dst, src)
+        with self.board.raw_repl():
+            for arg in args:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    src = MPath(arg)
+                    dst = Path(tmpdir) / src.name
+                    try:
+                        mpfs.get(src, dst)
+                    except ValueError:
+                        dst.touch()
+                    editor = os.environ.get("EDITOR", "/usr/bin/editor")
+                    print(f"Waiting for editor '{editor} {dst}' to finish...")
+                    ret = subprocess.run(
+                        f"{editor} {dst}", shell=True, capture_output=True
+                    )
+                    if ret.returncode == 0:
+                        mpfs.put(dst, src)
+                    else:
+                        print(f"Error running editor {editor}:\n{ret.stderr.decode()}")
+                        print("Changes not saved to the board.")
 
     def do_touch(self, args: Argslist) -> None:
         """
@@ -265,7 +280,9 @@ class RemoteCmd(BaseCommands):
         Hit the TAB key after typing '{' to see all the available parameters.
         """
         opts, args = _opt_args(args)
-        print(" ".join(args).format_map(self.params), end="" if "n" in opts else "\n")
+        print(
+            " ".join(args).format_map(self.parameters), end="" if "n" in opts else "\n"
+        )
 
     # Board commands
     def do_uname(self, args: Argslist) -> None:
@@ -276,7 +293,7 @@ class RemoteCmd(BaseCommands):
             print("uname: unexpected args:", args)
         print(
             "Micropython {nodename} ({unique_id}) "
-            "{version} {sysname} {machine}".format_map(self.params)
+            "{version} {sysname} {machine}".format_map(self.parameters)
         )
 
     def do_time(self, args: Argslist) -> None:
@@ -355,57 +372,78 @@ class RemoteCmd(BaseCommands):
         print("Before GC: Free bytes =", before)
         print("After  GC: Free bytes =", after)
 
+    def initialise_board(self) -> bool:
+        "Initialise the micropython environment on the board."
+        # The %magic commands assume these modules have been imported.
+        self.board.exec(
+            "import os, sys, gc, time; from machine import unique_id as _unique_id"
+        )
+        return True
+
+    def set_static_board_parameters(self) -> None:
+        "Update the parameters used in the longform prompt."
+        self.parameters["device"] = self.board.device_name
+        self.parameters["dev"] = self.board.short_name
+        self.parameters["platform"], self.parameters["unique_id"] = self.board.eval(
+            "(sys.platform, _unique_id().hex())"
+        )
+        self.parameters.update(self.board.eval('eval(f"dict{os.uname()}")'))
+        unique_id = self.parameters.get("unique_id", "")
+        self.parameters["id"] = unique_id
+        self.parameters["name"] = self.device_names.get(  # Look up name for board
+            self.parameters["unique_id"], self.parameters["id"]
+        )
+        self.last_free = self.board.eval("gc.mem_free()")
+
+    def update_dynamic_board_parameters(self) -> None:
+        "Update the dynamic parameters used in the longform prompt."
+        # Calculate dynamic quantities for the prompt
+        pwd, alloc, free = self.board.eval(
+            "(os.getcwd(), gc.mem_alloc(), gc.mem_free())"
+        )
+        free_percent = round(100 * free / (alloc + free))
+        free_colour = (
+            "green" if free_percent > 50 else
+            "yellow" if free_percent > 25 else
+            "red"
+        )  # fmt: skip
+        # Update dynamic quantities for the prompt
+        self.parameters.update(
+            {
+                "pwd": pwd,
+                "free": self.colour(free_colour, free),
+                "free_pc": f"{self.colour(free_colour, free_percent)}%",
+                "free_delta": f"{self.last_free - free:+d}",
+                "time_ms": self.cmd_time,
+                "lcd": str(cwd := Path.cwd()),  # Current working directory
+                "lcd1": str(Path(*cwd.parts[-1:])),  # Last part of cwd
+                "lcd2": str(Path(*cwd.parts[-2:])),  # Last two parts of cwd
+                "lcd3": str(Path(*cwd.parts[-3:])),  # Last three parts of cwd
+            }
+        )
+        self.last_free = free
+
     # Override the base class initialise() method to connect to the board
-    @override
+    # @override
     def initialise(self) -> bool:
         "Initialise the connection to the micropython board."
         if self.initialised:
             return False
+        self.initialise_board()
+        self.set_static_board_parameters()
         # Update the parameters used in the longform prompt
-        self.prompt_fmt = (
-            "{bold-cyan}{id} {yellow}{platform} ({free}){bold-blue}{pwd}> "
-        )
-        self.params["device"] = self.board.device_name
-        self.params["dev"] = self.board.short_name
-        with catcher():
-            self.board.exec("import os, sys, gc, time; from machine import unique_id")
-            self.params["platform"], self.params["unique_id"] = self.board.eval(
-                "(sys.platform, unique_id().hex(':'))"
-            )
-        with catcher():
-            self.params.update(self.board.eval('eval(f"dict{os.uname()}")'))
-        unique_id = self.params.get("unique_id", "")
-        self.params["id"] = unique_id[-8:]  # Last 3 octets
-        self.params["name"] = self.params["id"]
         super().initialise()
-        # Load "name" param from self.names after it is loaded from the options
-        # file in super().initialise()
-        self.params["name"] = self.names.get(  # Look up name for board
-            self.params["unique_id"], self.params["id"]
-        )
         return True
 
+    def reinitialise_board(self) -> None:
+        "Mark the board as uninitialised."
+        self.initialised = False
+
     # Override the base class set_prompt() method to update the prompt
-    @override
+    # @override
     def set_prompt(self) -> None:
         "Set the prompt using the prompt_fmt string."
         if self.multi_cmd_mode:
             # Update the prompt variables with some dynamic info from board
-            pwd, alloc, free = self.board.eval(
-                "(os.getcwd(), gc.mem_alloc(), gc.mem_free())"
-            )
-            free_percent = round(100 * free / (alloc + free))
-            free_delta = max(0, self.free - free)
-            free_colour = (
-                "green" if free_percent > 50 else
-                "yellow" if free_percent > 25 else
-                "red"
-            )  # fmt: skip
-            self.free = free
-
-            # Update some dynamic info for the prompt
-            self.params["pwd"] = pwd
-            self.params["free"] = self.colour(free_colour, free)
-            self.params["free_pc"] = self.colour(free_colour, free_percent)
-            self.params["free_delta"] = free_delta
+            self.update_dynamic_board_parameters()
         super().set_prompt()

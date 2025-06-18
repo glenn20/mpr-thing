@@ -22,7 +22,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 from traceback import print_exc
-from typing import Any, Iterable
+from typing import Any
 
 from mpremote_path import MPRemotePath as MPath
 from mpremote_path.util import mpfs
@@ -32,9 +32,18 @@ from .colour import AnsiColour
 # Type alias for the list of command arguments
 Argslist = list[str]
 
-HISTORY_FILE = "~/.mpr-thing.history"
-OPTIONS_FILE = ".mpr-thing.options"
-RC_FILE = ".mpr-thing.rc"
+# Set up the default path for mpr-thing config files.
+CONFIGPATH = Path(
+    os.environ.get("APPDATA")  # Windows
+    or os.environ.get("XDG_CONFIG_HOME")  # Linux/Mac
+    or os.path.expanduser("~/.config"),
+    "mpr-thing",
+)
+CONFIGPATH.mkdir(parents=True, exist_ok=True)
+
+HISTORY_FILE = CONFIGPATH / "history"
+OPTIONS_FILE = CONFIGPATH / "options"
+RC_FILE = CONFIGPATH / "startup-commands"
 
 
 def slashify(path: Path | str) -> str:
@@ -46,38 +55,24 @@ def slashify(path: Path | str) -> str:
         return str(path)
 
 
-# A context manager to catch exceptions from mpremote SerialTransport and others
-class catcher:
-    """Catch and report exceptions commonly raised by the mpr-thing tool.
-    Eg.
-        with catcher():
-            id = board.eval("unique_id()")"""
-
-    nested_depth = 0
-
-    def __enter__(self) -> catcher:
-        catcher.nested_depth += 1
-        return self
-
-    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool:
-        catcher.nested_depth -= 1
-        if exc_type is KeyboardInterrupt:
-            print("Keyboard Interrupt.")
-            if catcher.nested_depth > 0:
-                return False  # Propagate the exception to the top-level catcher
-        if exc_type in (OSError, FileNotFoundError):
-            print(f"{exc_type.__name__}: {exc_value}")
-        elif exc_type is Exception:
-            print("Error:: ", end="")
-            print(f"{exc_type.__name__}: {exc_value}")
-            print(traceback)
-        return True
-
-
 # Support for the interactive command line interpreter for running shell-like
 # commands on the remote board. This base class contains all the initialisation
 # and utility methods as well as some necessary overrides for the cmd.Cmd class.
 class BaseCommands(cmd.Cmd):
+    initialised: bool  # Whether the command line has been initialised
+    multi_cmd_mode: bool  # Whether we are in multi-command mode
+    shell_mode: bool  # Whether we are in shell mode (eg: ! command)
+    prompt: str  # The current prompt string
+    long_prompt: str  # The format string for the prompt
+    prompt_colour: str  # Colour of the short prompt
+    shell_colour: str  # Colour of the shell prompt
+    command_colour: str  # Colour of the commandline
+    output_colour: str  # Colour of the command output
+    aliases: dict[str, str]  # Command aliases
+    parameters: dict[str, Any]  # Params we can use in prompt
+    device_names: dict[str, str]  # Map device unique_ids to names
+    lsspec: dict[str, str]  # Extra colour specs for %ls
+    cmd_time: int  # Time to execute command on board
     base_prompt: str = ">>> "
     doc_leader: str = "================================================================"
     doc_header: str = (
@@ -102,56 +97,43 @@ class BaseCommands(cmd.Cmd):
         self.multi_cmd_mode = False
         self.shell_mode = False
         self.prompt = self.base_prompt
-        self.prompt_fmt = "> "
+        self.long_prompt = "> "
         self.prompt_colour = "cyan"  # Colour of the short prompt
-        self.shell_colour = "magenta"  # Colour of the short prompt
+        self.shell_colour = "magenta"  # Colour of the shell prompt
         self.command_colour = "reset"  # Colour of the commandline
         self.output_colour = "reset"  # Colour of the command output
-        self.alias: dict[str, str] = {}  # Command aliases
-        self.params: dict[str, Any] = {}  # Params we can use in prompt
-        self.names: dict[str, str] = {}  # Map device unique_ids to names
-        self.lsspec: dict[str, str] = {}  # Extra colour specs for %ls
-        self.cmd_time: int = 0  # Time to execute command on board
-        readline.set_completer_delims(" \t\n>;")
+        self.aliases = {}  # Command aliases
+        self.parameters = {}  # Parameters we can use in the prompt
+        self.device_names = {}  # Map device unique_ids to names
+        self.lsspec = {}  # Extra colour specs for %ls
+        self.cmd_time = 0  # Time to execute command on board
 
-        # Cmd.cmdloop() overrides completion settings in ~/.inputrc
-        # We can disable this by setting completekey=''
-        super().__init__(completekey="")
-        # But then we need to load the completer function ourselves
+        # Readline setup and configuration
+        # Cmd.cmdloop() binds the completion character to "tab" by default,
+        # potentially overriding user preferences in ~/.inputrc.
+        readline.set_completer_delims(" \t\n>;")
+        super().__init__(completekey="")  # Prevent Cmd from setting completekey
+        # So, we need to configure the completer ourselves.
         self.old_completer = readline.get_completer()
         readline.set_completer(self.complete)  # type: ignore
+        if HISTORY_FILE.is_file():
+            readline.read_history_file(str(HISTORY_FILE))
 
-        # Load the readline history file
-        self.history_file = os.path.expanduser(HISTORY_FILE)
-        if os.path.isfile(self.history_file):
-            readline.read_history_file(self.history_file)
+        # The readline module may use libedit instead of GNU readline,
+        # so we need to bind the tab key to rl_complete for compatibility.
+        if os.getenv("READLINE") == "libedit":
+            readline.parse_and_bind("bind ^I rl_complete")  # libedit
+        else:
+            readline.parse_and_bind("tab: complete")  # GNU readline
+        readline.parse_and_bind("set completion-ignore-case on")
+
         self.logging = str(
             logging.getLevelName(logging.getLogger().getEffectiveLevel())
         ).lower()
-        self.params["time_ms"] = self.cmd_time
+        self.parameters["time_ms"] = self.cmd_time
         # Add the ansi colour names
-        self.params.update({c: self.colour.ansi(c) for c in self.colour.colour})
+        self.parameters.update({c: self.colour.ansi(c) for c in self.colour.colour})
         self.load_command_file(OPTIONS_FILE)
-
-    def load_command_file(self, file: str) -> bool:
-        'Read commands from "file" first in home folder then local folder.'
-        for rcfile in [os.path.expanduser("~/" + file), file]:
-            lines = []
-            try:
-                # Load and close file before processing as cmds may force
-                # re-write of file (eg. ~/.mpr-thing.options)
-                with open(rcfile, "r", encoding="utf-8") as f:
-                    lines = list(f)
-            except OSError:
-                pass
-            for i, line in enumerate(lines):
-                try:
-                    self.onecmd(line)
-                except Exception as err:  # pylint: disable=broad-except
-                    print(f"Error loading {rcfile} on line {i + 1}: {line.strip()}")
-                    print(f"  {type(err).__name__}: {err}")
-            return True
-        return False
 
     def initialise(self) -> bool:
         if self.initialised:
@@ -160,47 +142,25 @@ class BaseCommands(cmd.Cmd):
         self.initialised = True
         return True
 
-    def _readline_escape_prompt(self, prompt: str) -> str:
-        """Escape the prompt for readline so it can calculate the length
-        of the prompt correctly."""
-        # Make GNU readline calculate the length of the colour prompt
-        # correctly. See readline.rl_expand_prompt() docs.
-        return re.sub("(\x1b\\[[0-9;]+m)", "\x01\\1\x02", prompt)
-
-    def set_prompt(self) -> None:
-        "Set the prompt using the prompt_fmt string."
-        prompt: str
-        if self.multi_cmd_mode:
-            # Update some params for the prompt
-            self.params["time_ms"] = self.cmd_time
-            self.params["lcd"] = os.getcwd()
-            self.params["lcd3"] = "/".join(os.getcwd().rsplit("/", 3)[1:])
-            self.params["lcd2"] = "/".join(os.getcwd().rsplit("/", 2)[1:])
-            self.params["lcd1"] = "/".join(os.getcwd().rsplit("/", 1)[1:])
-            prompt = (
-                # Make colour reset act like a colour stack
-                self.colour.colour_stack(
-                    # Build the prompt from prompt_fmt (set with %set cmd)
-                    self.prompt_fmt.format_map(self.params)
-                    + self.colour.ansi(self.command_colour)
-                )
-            )
-        else:
-            # Use the simple short form coloured prompt
-            prompt = (
-                ""
-                + self.colour(self.prompt_colour, self.base_prompt)
-                + (
-                    (self.colour.ansi(self.command_colour) + "%")
-                    if not self.shell_mode
-                    else (self.colour.ansi(self.shell_colour) + "!")
-                )
-            )
-        self.prompt = self._readline_escape_prompt(prompt)
+    def load_command_file(self, file: Path) -> bool:
+        'Read commands from "file".'
+        if not file.is_file():
+            return False  # File does not exist
+        # Load and close file before processing as cmds may force
+        # re-write of file (eg. ~/.config/mpr-thing/options)
+        with open(file, "r", encoding="utf-8") as f:
+            lines = list(f)
+        for i, line in enumerate(lines):
+            try:
+                self.onecmd(line)
+            except Exception as err:  # pylint: disable=broad-except
+                print(f"Error loading {file} on line {i + 1}: {line.strip()}")
+                print(f"  {type(err).__name__}: {err}")
+        return True
 
     def do_include(self, args: Argslist) -> None:
         for arg in args:
-            self.load_command_file(arg)
+            self.load_command_file(Path(arg))
 
     def do_shell(self, args: Argslist) -> None:
         """
@@ -241,7 +201,7 @@ class BaseCommands(cmd.Cmd):
             %ll /lib
         """
         if not args:
-            for k, v in self.alias.items():
+            for k, v in self.aliases.items():
                 print(f'alias "{k}"="{v}"')
             return
 
@@ -250,28 +210,30 @@ class BaseCommands(cmd.Cmd):
             if not alias or not value:
                 print(f'Invalid alias: "{arg}"')
                 continue
-            self.alias[alias] = value
+            self.aliases[alias] = value
 
         # Now, save the aliases in the options file
-        self.save_options()
+        if self.initialised:
+            self.save_options()
 
     def do_unalias(self, args: Argslist) -> None:
         """
         Delete aliases which have been set with the % alias command:
             %unalias ll [...]"""
         for arg in args:
-            del self.alias[arg]
-        self.save_options()
+            del self.aliases[arg]
+        if self.initialised:
+            self.save_options()
 
     def do_set(self, args: Argslist) -> None:  # noqa: C901 too complex
         if not args:
-            print(f'set prompt="{self.prompt_fmt}"')
+            print(f'set prompt="{self.long_prompt}"')
             print(f'set promptcolour="{self.prompt_colour}"')
             print(f'set commandcolour="{self.command_colour}"')
             print(f'set shellcolour="{self.shell_colour}"')
             print(f'set outputcolour="{self.output_colour}"')
-            print(f'set name="{self.names[self.params["unique_id"]]}"')
-            print(f"set names='{json.dumps(self.names)}'")
+            print(f'set name="{self.device_names[self.parameters["unique_id"]]}"')
+            print(f"set names='{json.dumps(self.device_names)}'")
             print(f"set lscolour='{json.dumps(self.lsspec)}'")
             print(f'set logging="{self.logging}"')
             return
@@ -285,16 +247,16 @@ class BaseCommands(cmd.Cmd):
                 print("%set: invalid option setting:", arg)
                 continue
             if key == "prompt":
-                saved_fmt = self.prompt_fmt
+                saved_fmt = self.long_prompt
                 saved_multi_cmd_mode = self.multi_cmd_mode
                 try:
-                    self.prompt_fmt = value
+                    self.long_prompt = value
                     self.multi_cmd_mode = self.initialised
                     self.set_prompt()  # Check for errors in the prompt
                 except KeyError as err:  # Restore the old prompt_fmt
                     print(f"%set prompt={value!r}\r")
                     print(f"    Invalid key in prompt: {err}\r")
-                    self.prompt_fmt = saved_fmt
+                    self.long_prompt = saved_fmt
                 finally:
                     self.multi_cmd_mode = saved_multi_cmd_mode
                     self.set_prompt()  # Restore the right prompt
@@ -324,11 +286,11 @@ class BaseCommands(cmd.Cmd):
                     print("%set: invalid colour:", value)
             elif key == "names":
                 try:
-                    self.names.update(json.loads(value))
+                    self.device_names.update(json.loads(value))
                 except ValueError as err:
                     print("%set:", err)
             elif key == "name":
-                self.names[self.params["unique_id"]] = value
+                self.device_names[self.parameters["unique_id"]] = value
             elif key in ["lscolour", "lscolor"]:
                 d: dict[str, str] = {}
                 d.update(json.loads(value))
@@ -344,31 +306,25 @@ class BaseCommands(cmd.Cmd):
                     pair = arg.split("=", maxsplit=1)
                     name, level = pair if len(pair) == 2 else (None, pair[0])
                     logging.getLogger(name).setLevel(level.upper())
-                self.logging = value  # type: ignore
+                self.logging = value
             else:
                 print("%set: unknown key:", key)
-        self.save_options()
+        if self.initialised:
+            self.save_options()
 
     def save_options(self) -> None:
         "Save the options in a startup file."
-        if not self.initialised:
-            return  # Don't save if we are reading from the options file
-        filename = (
-            OPTIONS_FILE
-            if os.path.isfile(OPTIONS_FILE)
-            else os.path.expanduser("~/" + OPTIONS_FILE)
-        )
-        with open(filename, "w", encoding="utf-8") as f:
+        with open(OPTIONS_FILE, "w", encoding="utf-8") as f:
             f.write("# mpr-thing options save file.\n")
             f.write("# Edit with caution: will be overwritten by mpr-thing.\n")
-            f.write(f'set prompt="{self.prompt_fmt}"\n')
+            f.write(f'set prompt="{self.long_prompt}"\n')
             f.write(f'set promptcolour="{self.prompt_colour}"\n')
             f.write(f'set commandcolour="{self.command_colour}"\n')
             f.write(f'set shellcolour="{self.shell_colour}"\n')
             f.write(f'set outputcolour="{self.output_colour}"\n')
-            f.write(f"set names='{json.dumps(self.names)}'\n")
+            f.write(f"set names='{json.dumps(self.device_names)}'\n")
             f.write(f"set lscolour='{json.dumps(self.lsspec)}'\n")
-            for name, value in self.alias.items():
+            for name, value in self.aliases.items():
                 f.write(f'alias "{name}"="{value}"\n')
 
     def help_set(self) -> None:
@@ -397,12 +353,13 @@ class BaseCommands(cmd.Cmd):
             )
         )
         print(
-            f"\nThese options will be automatically saved in ~/{OPTIONS_FILE}\n"
+            f"\nThese options will be automatically saved in "
+            f"~/.config/mpr-thing/{OPTIONS_FILE}\n"
             f"or ./{OPTIONS_FILE} (if it exists).\n"
             f"\nPrompts are python format strings and may include:\n    ",
             end="",
         )
-        for i, k in enumerate(k for k in self.params if not k.startswith("ansi")):
+        for i, k in enumerate(k for k in self.parameters if not k.startswith("ansi")):
             print(f"{'{' + k + '}':15}", end="" if (i + 1) % 5 else "\n    ")
         print("and the ansi256 color codes: {ansi0}, {ansi1}, ...{ansi255}")
 
@@ -438,6 +395,7 @@ class BaseCommands(cmd.Cmd):
                 'Type "quit" or ctrl-D to return to micropython repl:'
             )
             self.multi_cmd_mode = True
+            self.set_prompt()
         elif self.multi_cmd_mode and line in ("exit", "quit", "EOF"):
             # End command line mode - typed "quit", "exit" or ctrl-D
             self.prompt = self.base_prompt
@@ -472,10 +430,10 @@ class BaseCommands(cmd.Cmd):
         func()
 
     def complete_params(self, word: str) -> Argslist:
-        # Complete on board params, eg: set prompt="{de[TAB]
+        """Complete on board params, eg: set prompt="{de[TAB]"""
         pre, sep, post = word.partition("{")
         return (
-            [f"{pre}{sep}{k}}}" for k in self.params if k.startswith(post)]
+            [f"{pre}{sep}{k}}}" for k in self.parameters if k.startswith(post)]
             if sep
             else []
         )
@@ -484,7 +442,7 @@ class BaseCommands(cmd.Cmd):
     def completedefault(self, *args: str) -> Argslist:  # type: ignore
         'Perform filename completion on "word".'
         word, line, *_ = args
-        command = line.split()[0].lstrip("%")
+        command = line.split()[0].lstrip("%")  # Ignore leading '%'
         if self.shell_mode:
             command = "shell"
         if command in self.completion_type["params"]:  # eg: set prompt="{de[TAB]
@@ -492,12 +450,10 @@ class BaseCommands(cmd.Cmd):
         elif command in self.completion_type["none"]:
             return []
         # A : prefix in word means to toggle whether to complete on board or host
-        prefix, word = (
-            ("", word) if not word.startswith(":") else (":", word.lstrip(":"))
-        )
+        prefix, word = (":", word[1:]) if word.startswith(":") else ("", word)
         # Choose whether to complete filenames on the board or the host
         is_remote = command in self.completion_type["remote_files"]
-        is_remote ^= bool(prefix)  # Toggle remote completion if : prefix
+        is_remote ^= bool(prefix)  # Toggle remote filename completion if : prefix
         pwd = MPath(".") if is_remote else Path(".")
         files = pwd.glob(word + "*")  # Get filenames that match
         if command in self.completion_type["directories"]:
@@ -505,33 +461,19 @@ class BaseCommands(cmd.Cmd):
         # Put the : prefix back if present and add / to end of directories
         return [prefix + slashify(p) for p in files]
 
-    def expand_globs(self, args: Argslist) -> Iterable[str]:
-        if args[0] in self.completion_type["none"]:
-            yield from args
-            return
-        pwd = (
-            MPath(".") if args[0] in self.completion_type["remote_files"] else Path(".")
-        )
-        yield args[0]  # Dont expand the command name
-        for arg in args[1:]:
-            if "*" in arg or "?" in arg:
-                yield from [str(f) for f in pwd.glob(arg)] or [arg]
-            else:
-                yield arg
-
-    def split(self, line: str) -> Argslist:
+    def split_commandline(self, line: str) -> Argslist:
         "Split the command line into tokens."
-        # punctuation_chars=True ensures semicolons can split commands
-        lex = shlex.shlex(line, None, True, True)
-        lex.wordchars += ":"
+        # punctuation_chars=";" ensures semicolons can split commands
+        lex = shlex.shlex(line, infile=None, posix=True, punctuation_chars=";")
+        lex.wordchars += ":"  # Treat colons as part of words
         return list(lex)
 
     def expand_aliases(self, args: Argslist) -> Argslist:
         "Expand command aliases, returning the new args list after expansion."
-        if not args or args[0] not in self.alias:
+        if not args or args[0] not in self.aliases:
             return args
 
-        alias = self.alias[args.pop(0)]  # Get the value of the expanded alias
+        alias = self.aliases[args.pop(0)]  # Get the value of the expanded alias
 
         # The expanded alias may include format specifiers: {}, {:23}, ... We
         # need to know which of the original args will be consumed by the alias,
@@ -543,7 +485,7 @@ class BaseCommands(cmd.Cmd):
 
         # Expand the alias and split the result into a list of args
         # can include format specifiers: {}, {3}, ...
-        new_args = self.split(alias.format(*args))
+        new_args = self.split_commandline(alias.format(*args))
         # We then add any unused original args to the end of the line
         new_args.extend(arg for n, arg in enumerate(args) if n not in used)
 
@@ -572,15 +514,8 @@ class BaseCommands(cmd.Cmd):
         args = split_semicolons(args)
         args = self.expand_aliases(args)
         args = split_semicolons(args)  # Alias may expand to include ';'
-        # args = list(self.expand_globs(args))  # Expand glob patterns
 
         return args
-
-    # Override some control functions in the Cmd class
-    # Ensure everything has been initialised.
-    # @override
-    def preloop(self) -> None:
-        self.set_prompt()
 
     # @override
     def onecmd(self, line: str) -> bool:
@@ -588,14 +523,14 @@ class BaseCommands(cmd.Cmd):
         print(f"{self.colour.ansi('reset')}", end="", flush=True)
         start_time = time.perf_counter()
         if isinstance(line, list):
-            # List of str is pushed back onto cmdqueue in self.split()
+            # List of str is pushed back onto cmdqueue in self.split_commandline()
             args = line
         else:  # line is a string
             if self.multi_cmd_mode:  # Discard leading '%' in multi-cmd mode
                 if line and line.startswith("%") and not line.startswith("%%"):
                     line = line[1:]
                     readline.replace_history_item(1, line)
-            readline.write_history_file(self.history_file)
+            readline.write_history_file(HISTORY_FILE)
 
             # A command line read from the input
             if self.shell_mode:
@@ -607,7 +542,7 @@ class BaseCommands(cmd.Cmd):
                 return self.default(line)
 
             # Split the command line into a list of args
-            args = list(self.split(line))
+            args = self.split_commandline(line)
 
         args = self.process_args(args)  # Expand aliases, macros and globs
         command, *args = args or [""]
@@ -625,9 +560,32 @@ class BaseCommands(cmd.Cmd):
         self.initialise()
         return line
 
+    def _readline_escape_prompt(self, prompt: str) -> str:
+        """Escape the colourised prompt for readline so it can calculate the
+        length of the prompt correctly."""
+        # See readline.rl_expand_prompt() docs.
+        return re.sub("(\x1b\\[[0-9;]+m)", "\x01\\1\x02", prompt)
+
+    def set_prompt(self) -> None:
+        "Set the prompt using the prompt_fmt string."
+        prompt = (
+            self.long_prompt.format_map(self.parameters) if self.multi_cmd_mode else
+            self.base_prompt
+        )  # fmt: off
+        self.prompt = self._readline_escape_prompt(
+            self.colour.ansi(self.command_colour) +
+            self.colour.colour_stack(prompt)
+            + (
+                self.colour.ansi(self.command_colour) if self.multi_cmd_mode else
+                (self.colour.ansi(self.shell_colour) + "!") if self.shell_mode else
+                (self.colour.ansi(self.command_colour) + "%")
+            )
+        )  # fmt: off
+
     # @override
     def postcmd(self, stop: Any, line: str) -> bool:
-        self.set_prompt()  # Setup our complicated prompt
+        if self.multi_cmd_mode:
+            self.set_prompt()  # Set the prompt for the next command
         # Exit if we are in single command mode and no commands in the queue
         return not self.multi_cmd_mode and not self.cmdqueue
 
@@ -635,20 +593,21 @@ class BaseCommands(cmd.Cmd):
     def run(self, prefix: bytes = b"%") -> None:
         "Catch exceptions and restart the Cmd.cmdloop()."
         self.shell_mode = prefix == b"!"
-        stop = False
-        while not stop:
+        while True:
             try:
+                self.set_prompt()
                 self.cmdloop()
             except KeyboardInterrupt:
-                print()
+                print("^C")
             except Exception as err:  # pylint: disable=broad-except
                 print(f"Error in command: {err}\n{err.args}")
                 print_exc()
-                # raise
             finally:
-                if stop := not self.multi_cmd_mode:
+                if not self.multi_cmd_mode:
                     print(f"{self.colour.ansi('reset')}", end="")
                     print(self.base_prompt, end="", flush=True)
+            if not self.multi_cmd_mode:
+                break
         self.shell_mode = False
 
     # @override

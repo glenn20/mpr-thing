@@ -22,8 +22,6 @@ from .remote_commands import RemoteCmd
 
 Writer = Callable[[bytes], None]  # A type alias for console write functions
 
-LOGGING_CONFIG_FILE = "logging.yaml"
-
 
 def hard_reset(transport: SerialTransport) -> None:
     "Toggle DTR on the serial port to force a hardware reset of the board."
@@ -85,91 +83,102 @@ def my_do_repl_main_loop(  # noqa: C901 - ignore function is too complex
 ) -> None:
     'An overload function for the main repl loop in "mpremote".'
 
-    seen_prompt, beginning_of_line = False, False
-    prompt = b"\n>>> "
-    serial_buffer = b""  # Keep track of last chars from serial port
     transport: SerialTransport = state.transport  # type: ignore
-    magic_command_processor = RemoteCmd(Board(transport, console_out_write))
+    magic_command_interpreter = RemoteCmd(Board(transport, console_out_write))
+
+    prompt = b"\n>>> "  # The prompt we expect to see from micropython
+    serial_buffer = b""  # Keep track of recent chars from serial port
+    seen_prompt, beginning_of_line = False, False
 
     while True:
-        console_in.waitchar(transport.serial)
-        c = console_in.readchar()
-        if c:
-            if c in (b"\x1d", b"\x18"):  # ctrl-] or ctrl-x, quit
-                break
-            elif c == b"\x04":  # ctrl-D
-                # do a soft reset and reload the filesystem hook
-                transport.write_ctrl_d(console_out_write)
-                magic_command_processor.initialised = False
-                beginning_of_line = True
-            elif c == b"\x12":  # ctrl-R
-                # Toggle DTR (hard reset) and reload the filesystem hook
-                hard_reset(transport)
-                magic_command_processor.initialised = False
-                beginning_of_line = True
-            elif c == b"\x0a" and code_to_inject is not None:
-                transport.serial.write(code_to_inject)  # ctrl-j, inject code
-            elif c == b"\x0b" and file_to_inject is not None:
-                console_out_write(bytes(f"Injecting {file_to_inject}\r\n", "utf8"))
-                transport.enter_raw_repl(soft_reset=False)
-                with open(file_to_inject, "rb") as f:
-                    pyfile = f.read()
-                try:
-                    transport.exec_raw_no_follow(pyfile)
-                except TransportError as er:
-                    console_out_write(b"Error:\r\n")
-                    console_out_write(repr(er).encode())
-                beginning_of_line = True
-                transport.exit_raw_repl()
-            elif (
-                c in b"%!"
-                and seen_prompt  # Magic sequence if at start of line
-                and (
-                    beginning_of_line
-                    or cursor_column(console_in, console_out_write) == len(prompt)
-                )
-            ):
-                console_out_write(b"\r\x1b[2K")  # Clear line before rewriting prompt
-                try:
-                    console_in.exit()
-                    magic_command_processor.run(c)
-                finally:
-                    console_in.enter()
-                beginning_of_line = True
-            else:
-                transport.serial.write(c)
-                beginning_of_line = c in b"\r\n"  # Set beginning of line if CR or LF
-
-        n = 0
         try:
-            n = transport.serial.inWaiting()  # type: ignore
-        except OSError as er:
-            if er.args[0] == 5:  # IO error, device disappeared
-                print("device disconnected")
-                break
+            # Wait for a character from the console or the serial port
+            console_in.waitchar(transport.serial)
 
-        if n > 0:
-            dev_data_in = transport.serial.read(n)
-            if dev_data_in:
-                if escape_non_printable:
-                    # Pass data through to the console, with escaping of non-printables.
-                    console_data_out = bytearray()
-                    for c in dev_data_in:
-                        if c in (8, 9, 10, 13, 27) or 32 <= c <= 126:
-                            console_data_out.append(c)
-                        else:
-                            console_data_out.extend(b"[%02x]" % c)
+            # Process incoming characters from the console
+            c = console_in.readchar()
+            if c:
+                if c in (b"\x1d", b"\x18"):  # ctrl-] or ctrl-x, quit
+                    break
+                elif c == b"\x04":  # ctrl-D
+                    # do a soft reset and reload the filesystem hook
+                    transport.write_ctrl_d(console_out_write)
+                    magic_command_interpreter.reinitialise_board()
+                    beginning_of_line = True
+                elif c == b"\x12":  # ctrl-R
+                    # Toggle DTR (hard reset) and reload the filesystem hook
+                    hard_reset(transport)
+                    magic_command_interpreter.reinitialise_board()
+                    beginning_of_line = True
+                elif c == b"\x0a" and code_to_inject is not None:
+                    transport.serial.write(code_to_inject)  # ctrl-j, inject code
+                elif c == b"\x0b" and file_to_inject is not None:
+                    console_out_write(bytes(f"Injecting {file_to_inject}\r\n", "utf8"))
+                    transport.enter_raw_repl(soft_reset=False)
+                    with open(file_to_inject, "rb") as f:
+                        pyfile = f.read()
+                    try:
+                        transport.exec_raw_no_follow(pyfile)
+                    except TransportError as er:
+                        console_out_write(b"Error:\r\n")
+                        console_out_write(repr(er).encode())
+                    beginning_of_line = True
+                    transport.exit_raw_repl()
+                elif (
+                    c in b"%!"
+                    and seen_prompt  # Magic sequence if at start of line
+                    and (
+                        beginning_of_line
+                        or cursor_column(console_in, console_out_write) == len(prompt)
+                    )
+                ):
+                    console_out_write(b"\r\x1b[2K")  # Clear line before writing prompt
+                    try:
+                        console_in.exit()  #  Restore non-raw console mode
+                        magic_command_interpreter.run(c)
+                    finally:
+                        console_in.enter()
+                    beginning_of_line = True
                 else:
-                    console_data_out = dev_data_in
-                console_out_write(console_data_out)
-                # mpr_thing: Set seen_prompt=True if we see the expected prompt
-                # string coming from micropython on the serial port.
-                if b"\n" in dev_data_in:
-                    seen_prompt = False
-                serial_buffer = serial_buffer + dev_data_in
-                if not seen_prompt:
-                    seen_prompt = prompt in serial_buffer
-                serial_buffer = serial_buffer[-len(prompt) :]
+                    transport.serial.write(c)
+                    beginning_of_line = c in b"\r\n"
+
+            # Process incoming characters from the serial port
+            n = 0
+            try:
+                n = transport.serial.inWaiting()  # type: ignore
+            except OSError as er:
+                if er.args[0] == 5:  # IO error, device disappeared
+                    print("device disconnected")
+                    break
+
+            if n > 0:
+                dev_data_in = transport.serial.read(n)
+                if dev_data_in:
+                    console_data_out: bytes
+                    if escape_non_printable:
+                        # Pass data to console, with escaping of non-printables.
+                        console_data_out = bytearray()
+                        for ch in dev_data_in:
+                            if ch in (8, 9, 10, 13, 27) or 32 <= ch <= 126:
+                                console_data_out.append(ch)
+                            else:
+                                console_data_out.extend(b"[%02x]" % ch)
+                    else:
+                        console_data_out = dev_data_in
+                    console_out_write(console_data_out)
+                    # mpr_thing: Set seen_prompt=True if we see the expected prompt
+                    # string coming from micropython on the serial port.
+                    if b"\n" in dev_data_in:
+                        seen_prompt = False
+                    serial_buffer += dev_data_in
+                    if not seen_prompt:
+                        seen_prompt = prompt in serial_buffer
+                    serial_buffer = serial_buffer[-len(prompt) :]
+        except KeyboardInterrupt:
+            # If we get a ctrl-C, we want to restore the REPL loop
+            console_in.exit()
+            console_in.enter()
 
 
 # Override the mpremote main repl loop!!!
@@ -182,7 +191,7 @@ def main() -> int:
     locale.setlocale(locale.LC_ALL, "")  # Set locale for file listings, etc.
     logging.basicConfig(format="%(levelname)s %(message)s", level=logging.WARNING)
 
-    return mpremote.main.main()  # type: ignore
+    return mpremote.main.main()
 
 
 if __name__ == "__main__":
