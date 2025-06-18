@@ -73,6 +73,7 @@ build.targets.wheel.packages = ["src/mpr_thing"]
 [tool.mypy]
 files = ["src"]
 python_version = "3.9"
+mypy_path = "typings"
 disallow_untyped_defs = true
 warn_return_any = true
 warn_unused_ignores = false
