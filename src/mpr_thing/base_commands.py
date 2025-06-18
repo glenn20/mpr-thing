@@ -28,6 +28,7 @@ from mpremote_path import MPRemotePath as MPath
 from mpremote_path.util import mpfs
 
 from .colour import AnsiColour
+from .console import console
 
 # Type alias for the list of command arguments
 Argslist = list[str]
@@ -520,7 +521,7 @@ class BaseCommands(cmd.Cmd):
     # @override
     def onecmd(self, line: str) -> bool:
         """Override the default Cmd.onecmd()."""
-        print(f"{self.colour.ansi('reset')}", end="", flush=True)
+        # print(f"{self.colour.ansi('reset')}", end="", flush=True)
         start_time = time.perf_counter()
         if isinstance(line, list):
             # List of str is pushed back onto cmdqueue in self.split_commandline()
@@ -568,19 +569,28 @@ class BaseCommands(cmd.Cmd):
 
     def set_prompt(self) -> None:
         "Set the prompt using the prompt_fmt string."
-        prompt = (
+        prompt = f"[{self.command_colour}]"
+        prompt += (
             self.long_prompt.format_map(self.parameters) if self.multi_cmd_mode else
             self.base_prompt
         )  # fmt: off
-        self.prompt = self._readline_escape_prompt(
-            self.colour.ansi(self.command_colour) +
-            self.colour.colour_stack(prompt)
-            + (
-                self.colour.ansi(self.command_colour) if self.multi_cmd_mode else
-                (self.colour.ansi(self.shell_colour) + "!") if self.shell_mode else
-                (self.colour.ansi(self.command_colour) + "%")
-            )
+        prompt += (
+            f"[{self.command_colour}]" if self.multi_cmd_mode else
+            f"[{self.shell_colour}]" if self.shell_mode else
+            f"[{self.command_colour}]%"
         )  # fmt: off
+        with console.capture() as capture:
+            console.print(prompt, end="")
+        self.prompt = self._readline_escape_prompt(capture.get())
+        # self.prompt = self._readline_escape_prompt(
+        #     self.colour.ansi(self.command_colour) +
+        #     self.colour.colour_stack(prompt)
+        #     + (
+        #         self.colour.ansi(self.command_colour) if self.multi_cmd_mode else
+        #         (self.colour.ansi(self.shell_colour) + "!") if self.shell_mode else
+        #         (self.colour.ansi(self.command_colour) + "%")
+        #     )
+        # )  # fmt: off
 
     # @override
     def postcmd(self, stop: Any, line: str) -> bool:
@@ -604,7 +614,7 @@ class BaseCommands(cmd.Cmd):
                 print_exc()
             finally:
                 if not self.multi_cmd_mode:
-                    print(f"{self.colour.ansi('reset')}", end="")
+                    # print(f"{self.colour.ansi('reset')}", end="")
                     print(self.base_prompt, end="", flush=True)
             if not self.multi_cmd_mode:
                 break
