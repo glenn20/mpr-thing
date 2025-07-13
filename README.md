@@ -60,11 +60,11 @@ to mpremote and adds:
   | `%alias ll='ls -l'` | Create an alias command. Use `{}` or `{2}` to consume arguments when you use the alias. eg. `%alias connect='exec "network.WLAN(0).connect(\"{}\", \"{}\")"'` defines a new command: `%connect ssid password`. Any additional arguments will be added to the command after expanding the alias, eg: `%ll /lib`. |
   | `%unalias connect` |  |
   | `%set option=value` | Set and save some options. Changes will be saved and loaded each time mpr-thing starts. |
-  | `%set prompt="{pwd}> "` | Set the prompt for multi-command mode, eg: `%set prompt="{cyan}{name}@{dev}-{sysname}-({free}){blue}{pwd}> "`. Can use params from `{dev} {platform} {id} {nodename} {free} {pwd} {lcd} ...`. See `%help set` for a full list. |
+  | `%set prompt="{pwd}> "` | Set the prompt for multi-command mode, eg: `%set prompt="[cyan]{name}@{dev}-{sysname}-({free})[blue]{pwd}> "`. Can use params from `{dev} {platform} {id} {nodename} {free} {pwd} {lcd} ...`. See `%help set` for a full list. Colour can be specified using markup from the [`rich`](<https://rich.readthedocs.io/en/stable/markup.html>) module. |
   | `%set promptcolour=green` | Change the colour of the prompt for `%magic` commands. |
   | `%set name=node05` | Set and save the name of the current board (for use in prompt). |
   | `%set names='{...}'` | Update the mapping of all device unique_ids and names (as json string): eg. `%set names={"ab:cd:ef:01:23:45": "node01", ...}` |
-  | `%set lscolour='{...}'` | Add extra colour specs (as json) for `%ls` file listings, eg: `%set lscolour='{"di": "bold-blue", "*.py": "bold-cyan"}'` |
+  | `%set lscolour='{...}'` | Add extra colour specs (as json) for `%ls` file listings, eg: `%set lscolour='{"di": "bold blue", "*.py": "bold cyan"}'` |
   | `ctrl-R` | Toggle DTR on the serial port (reboots some boards, eg ESP32/8266). |
   | `;` | Used to separate commands on one line eg. `%cd /app; ls *.py` |
 
